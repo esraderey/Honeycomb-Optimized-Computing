@@ -72,7 +72,10 @@ python -m black --check .
 
 # Types (strict on security/memory/resilience; legacy suppressed via
 # [tool.mypy].exclude — see ADR-006)
-python -m mypy .
+# Uses an explicit file list to sidestep mypy's directory-name inference
+# (which rejects hyphens in the checkout dir like
+# "Honeycomb-Optimized-Computing" on CI).
+python -m mypy __init__.py security.py memory.py resilience.py
 
 # Security
 python -m bandit -r . -x ./tests,./benchmarks,./snapshot

@@ -29,14 +29,16 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "pytest==8.4.1",
+    # pytest 8.4.1 / black 25.1.0 hit GHSA-6w46-j5rx-g56g / GHSA-3936-cmfr-pm3m —
+    # bumped to the fix versions on 2026-04-24 after pip-audit surfaced them in CI.
+    "pytest==9.0.3",
     "pytest-benchmark==5.1.0",
     "pytest-cov==6.1.1",
     "pytest-mock==3.15.1",
     "pytest-timeout==2.4.0",
     "hypothesis==6.151.11",
     "ruff==0.8.6",
-    "black==25.1.0",
+    "black==26.3.1",
     "mypy==1.14.1",
     "pre-commit==4.0.1",
     "bandit==1.8.0",
@@ -56,7 +58,16 @@ packages = ["hoc", "hoc.core", "hoc.metrics"]
 testpaths = ["tests"]
 python_files = ["test_*.py", "bench_*.py"]
 python_functions = ["test_*"]
-addopts = "-v --tb=short"
+# --import-mode=importlib avoids pytest walking into the repo-root __init__.py
+# during collection. Since `package-dir = {hoc = "."}` makes the repo root
+# ALSO the hoc package root, the legacy "prepend" import mode tries to import
+# __init__.py as a loose module (no parent package) and fails with
+# "attempted relative import with no known parent package".
+addopts = "-v --tb=short --import-mode=importlib"
+pythonpath = ["."]
+# Don't descend into these dirs during collection. Prevents pytest from
+# discovering the package source and trying to treat files there as tests.
+norecursedirs = ["snapshot", "benchmarks", ".hypothesis", ".pytest_cache", "hoc.egg-info", "core", "metrics", "docs", ".git", "__pycache__"]
 
 [tool.coverage.run]
 source = ["."]
@@ -145,6 +156,13 @@ follow_imports = "silent"
 # All dependencies we actually use (numpy, mscs) are listed in overrides with
 # ignore_missing_imports, so this doesn't regress type quality for HOC itself.
 no_site_packages = true
+# NOTE: Invoke mypy with explicit file list
+# (`python -m mypy __init__.py security.py memory.py resilience.py`) rather
+# than `python -m mypy .`. The directory-mode tries to infer the package
+# name from the cwd, which breaks when the checkout dir has hyphens
+# (e.g. CI's "Honeycomb-Optimized-Computing" fails with "not a valid Python
+# package name"). Listing files explicitly sidesteps the inference.
+# See .github/workflows/lint.yml and CONTRIBUTING.md for the canonical CLI.
 exclude = [
     "tests/",
     "benchmarks/",

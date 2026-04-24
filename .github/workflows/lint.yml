@@ -35,7 +35,7 @@ jobs:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: pyproject.toml
-      - run: python -m pip install "black==25.1.0"
+      - run: python -m pip install "black==26.3.1"
       - run: python -m black --check .
 
   mypy:
@@ -54,7 +54,11 @@ jobs:
           python -m pip install -e ".[dev]"
           python -m pip install mscs
       # Phase 3: strict mypy only on security/memory/resilience (+ __init__.py).
-      # Legacy modules are excluded in pyproject [tool.mypy].exclude — they
-      # will be tightened per-module in later phases. Warnings there are not
-      # CI-blocking yet. See ADR-006.
-      - run: python -m mypy .
+      # Legacy modules are excluded via [tool.mypy].exclude in pyproject.toml.
+      # See ADR-006 for the graduation plan.
+      #
+      # NOTE: running `python -m mypy .` fails in CI because the checkout
+      # directory name "Honeycomb-Optimized-Computing" (hyphens) is not a
+      # valid Python package name and mypy infers it as such. Listing files
+      # explicitly sidesteps the inference.
+      - run: python -m mypy __init__.py security.py memory.py resilience.py

@@ -4,7 +4,10 @@
 -r requirements.txt
 
 # Testing
-pytest==8.4.1
+# pytest 8.4.1 / black 25.1.0 were bumped 2026-04-24 to fix CVEs
+# GHSA-6w46-j5rx-g56g (pytest) and GHSA-3936-cmfr-pm3m (black) surfaced by
+# pip-audit in CI.
+pytest==9.0.3
 pytest-benchmark==5.1.0
 pytest-cov==6.1.1
 pytest-mock==3.15.1
@@ -13,7 +16,7 @@ hypothesis==6.151.11
 
 # Linting / formatting / types
 ruff==0.8.6
-black==25.1.0
+black==26.3.1
 mypy==1.14.1
 pre-commit==4.0.1
 
