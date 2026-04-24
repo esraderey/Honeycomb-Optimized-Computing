@@ -31,7 +31,7 @@ MEJORAS v3.0 sobre v2.0:
 - [ROBUST] Validación exhaustiva en Config con mensajes claros
 
 Sistema de Coordenadas Axiales:
-                
+
         +r  ↗
            / \\
           /   \\
@@ -41,7 +41,7 @@ Sistema de Coordenadas Axiales:
              ↘ +s (implícito: s = -q - r)
 
 Direcciones (vecinos):
-    
+
          NW(0)    NE(1)
             ↖   ↗
              \\ /
@@ -54,70 +54,98 @@ Direcciones (vecinos):
 
 from __future__ import annotations
 
-import math
-import time
+import heapq
 import json
-import threading
 import logging
-import weakref
+import math
+import threading
+import time
 import uuid
-from abc import ABC, abstractmethod
-from enum import Enum, auto, IntEnum
-from dataclasses import dataclass, field, asdict
+import weakref
+from collections import OrderedDict, defaultdict, deque
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from contextlib import contextmanager, suppress
+from dataclasses import asdict, dataclass, field
+from enum import Enum, IntEnum, auto
+from functools import lru_cache
 from typing import (
-    Dict, List, Optional, Set, Tuple, Iterator,
-    Callable, Any, TypeVar, Generic, Union,
-    Protocol, runtime_checkable, FrozenSet,
-    NamedTuple, Sequence, Mapping, TYPE_CHECKING,
-    ClassVar, Final
+    TYPE_CHECKING,
+    Any,
+    ClassVar,
+    Final,
+    Protocol,
+    TypeVar,
+    runtime_checkable,
 )
-from collections import defaultdict, deque, OrderedDict
-from functools import lru_cache, cached_property
-from contextlib import contextmanager
+
 import numpy as np
 from numpy.typing import NDArray
-from concurrent.futures import ThreadPoolExecutor, Future, as_completed
-import heapq
 
 if TYPE_CHECKING:
     from typing import TypeAlias
 
 logger = logging.getLogger(__name__)
 
-T = TypeVar('T')
-CellT = TypeVar('CellT', bound='HoneycombCell')
+T = TypeVar("T")
+CellT = TypeVar("CellT", bound="HoneycombCell")
 
 # Type aliases
-CoordTuple: TypeAlias = Tuple[int, int]
-CubeTuple: TypeAlias = Tuple[int, int, int]
-PixelTuple: TypeAlias = Tuple[float, float]
+CoordTuple: TypeAlias = tuple[int, int]
+CubeTuple: TypeAlias = tuple[int, int, int]
+PixelTuple: TypeAlias = tuple[float, float]
 
 __all__ = [
     # Core types
-    'HexCoord', 'HexDirection', 'HexRegion', 'HexRing', 'HexPathfinder',
+    "HexCoord",
+    "HexDirection",
+    "HexRegion",
+    "HexRing",
+    "HexPathfinder",
     # Events
-    'EventType', 'Event', 'EventBus', 'EventHandler',
+    "EventType",
+    "Event",
+    "EventBus",
+    "EventHandler",
     # Concurrency
-    'RWLock',
+    "RWLock",
     # Pheromones
-    'PheromoneType', 'PheromoneDeposit', 'PheromoneField',
+    "PheromoneType",
+    "PheromoneDeposit",
+    "PheromoneField",
     # States & Roles
-    'CellState', 'CellRole',
+    "CellState",
+    "CellRole",
     # Config
-    'HoneycombConfig', 'GridTopology',
+    "HoneycombConfig",
+    "GridTopology",
     # Metrics
-    'CellMetrics', 'GridMetrics', 'MetricsCollector',
+    "CellMetrics",
+    "GridMetrics",
+    "MetricsCollector",
     # Cells
-    'HoneycombCell', 'QueenCell', 'WorkerCell', 'DroneCell',
-    'NurseryCell', 'StorageCell', 'GuardCell', 'ScoutCell',
+    "HoneycombCell",
+    "QueenCell",
+    "WorkerCell",
+    "DroneCell",
+    "NurseryCell",
+    "StorageCell",
+    "GuardCell",
+    "ScoutCell",
     # Grid
-    'HoneycombGrid',
+    "HoneycombGrid",
     # Health
-    'HealthMonitor', 'HealthStatus', 'CircuitBreaker', 'CircuitState',
+    "HealthMonitor",
+    "HealthStatus",
+    "CircuitBreaker",
+    "CircuitState",
     # Utilities
-    'create_grid', 'benchmark_grid',
+    "create_grid",
+    "benchmark_grid",
     # Event bus management
-    'get_event_bus', 'set_event_bus', 'reset_event_bus',
+    "get_event_bus",
+    "set_event_bus",
+    "reset_event_bus",
 ]
 
 
@@ -125,8 +153,10 @@ __all__ = [
 # SISTEMA DE EVENTOS (v3.0 - con backpressure y rate limiting)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class EventType(Enum):
     """Tipos de eventos del sistema HOC."""
+
     # Eventos de celda
     CELL_STATE_CHANGED = auto()
     CELL_LOAD_CHANGED = auto()
@@ -171,6 +201,7 @@ class EventType(Enum):
 @dataclass(frozen=True, slots=True)
 class Event:
     """Evento inmutable del sistema."""
+
     type: EventType
     source: Any
     data: Mapping[str, Any] = field(default_factory=dict)
@@ -179,12 +210,13 @@ class Event:
 
     def __post_init__(self):
         if not isinstance(self.data, Mapping):
-            object.__setattr__(self, 'data', dict(self.data))
+            object.__setattr__(self, "data", dict(self.data))
 
 
 @runtime_checkable
 class EventHandler(Protocol):
     """Protocolo para manejadores de eventos."""
+
     def __call__(self, event: Event) -> None: ...
 
 
@@ -192,12 +224,13 @@ class _HandlerRef:
     """
     v3.0 FIX: Wrapper para referencias a handlers que maneja correctamente
     bound methods, lambdas y funciones regulares.
-    
+
     weakref.ref() no funciona con bound methods porque se destruyen
     inmediatamente. Este wrapper detecta el caso y mantiene una strong ref
     cuando es necesario, con opción de weak ref para objetos persistentes.
     """
-    __slots__ = ('_ref', '_is_weak', '_handler_id')
+
+    __slots__ = ("_handler_id", "_is_weak", "_ref")
 
     def __init__(self, handler: EventHandler, weak: bool = True):
         self._handler_id = id(handler)
@@ -213,7 +246,7 @@ class _HandlerRef:
             self._ref = handler
             self._is_weak = False
 
-    def __call__(self) -> Optional[EventHandler]:
+    def __call__(self) -> EventHandler | None:
         if self._is_weak:
             return self._ref()
         return self._ref
@@ -226,7 +259,7 @@ class _HandlerRef:
 class EventBus:
     """
     Bus de eventos thread-safe (v3.0).
-    
+
     Mejoras v3.0:
     - HandlerRef para manejar bound methods correctamente
     - Rate limiting por tipo de evento (evita flood)
@@ -235,33 +268,34 @@ class EventBus:
     """
 
     __slots__ = (
-        '_handlers', '_lock', '_async_executor', '_event_history',
-        '_max_history', '_rate_limits', '_last_publish_time',
-        '_stats', '_max_async_queue', '_shutting_down'
+        "_async_executor",
+        "_event_history",
+        "_handlers",
+        "_last_publish_time",
+        "_lock",
+        "_max_async_queue",
+        "_max_history",
+        "_rate_limits",
+        "_shutting_down",
+        "_stats",
     )
 
-    def __init__(
-        self,
-        max_history: int = 1000,
-        max_async_queue: int = 10000
-    ):
-        self._handlers: Dict[EventType, List[Tuple[int, _HandlerRef]]] = defaultdict(list)
+    def __init__(self, max_history: int = 1000, max_async_queue: int = 10000):
+        self._handlers: dict[EventType, list[tuple[int, _HandlerRef]]] = defaultdict(list)
         self._lock = threading.RLock()
-        self._async_executor = ThreadPoolExecutor(
-            max_workers=4, thread_name_prefix="event_"
-        )
+        self._async_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="event_")
         self._event_history: deque = deque(maxlen=max_history)
         self._max_history = max_history
-        self._rate_limits: Dict[EventType, float] = {}
-        self._last_publish_time: Dict[EventType, float] = {}
-        self._stats: Dict[str, int] = defaultdict(int)
+        self._rate_limits: dict[EventType, float] = {}
+        self._last_publish_time: dict[EventType, float] = {}
+        self._stats: dict[str, int] = defaultdict(int)
         self._max_async_queue = max_async_queue
         self._shutting_down = False
 
     def set_rate_limit(self, event_type: EventType, min_interval: float) -> None:
         """
         Establece intervalo mínimo entre publicaciones del mismo tipo.
-        
+
         Args:
             event_type: Tipo de evento a limitar
             min_interval: Segundos mínimos entre publicaciones
@@ -273,7 +307,7 @@ class EventBus:
         event_type: EventType,
         handler: EventHandler,
         priority: int = 0,
-        weak: bool = False  # v3.0: default False (más seguro)
+        weak: bool = False,  # v3.0: default False (más seguro)
     ) -> Callable[[], None]:
         """
         Suscribe un handler a un tipo de evento.
@@ -296,8 +330,7 @@ class EventBus:
         def unsubscribe():
             with self._lock:
                 self._handlers[event_type] = [
-                    (p, r) for p, r in self._handlers[event_type]
-                    if r.handler_id != handler_id
+                    (p, r) for p, r in self._handlers[event_type] if r.handler_id != handler_id
                 ]
 
         return unsubscribe
@@ -305,7 +338,7 @@ class EventBus:
     def publish(self, event: Event, async_: bool = False) -> bool:
         """
         Publica un evento a todos los handlers suscritos.
-        
+
         Returns:
             True si fue publicado, False si fue rate-limited o descartado
         """
@@ -317,12 +350,12 @@ class EventBus:
             now = time.time()
             last = self._last_publish_time.get(event.type, 0.0)
             if now - last < self._rate_limits[event.type]:
-                self._stats['rate_limited'] += 1
+                self._stats["rate_limited"] += 1
                 return False
             self._last_publish_time[event.type] = now
 
         self._event_history.append(event)
-        self._stats['published'] += 1
+        self._stats["published"] += 1
 
         handlers = self._get_handlers(event.type)
 
@@ -332,20 +365,20 @@ class EventBus:
                     self._async_executor.submit(self._safe_call, handler, event)
                 except RuntimeError:
                     # Executor cerrado o lleno
-                    self._stats['dropped'] += 1
+                    self._stats["dropped"] += 1
         else:
             for handler in handlers:
                 self._safe_call(handler, event)
 
         return True
 
-    def _get_handlers(self, event_type: EventType) -> List[EventHandler]:
+    def _get_handlers(self, event_type: EventType) -> list[EventHandler]:
         """Obtiene handlers activos (limpia refs muertas)."""
         with self._lock:
             active = []
             dead_indices = []
 
-            for i, (priority, ref) in enumerate(self._handlers[event_type]):
+            for i, (_priority, ref) in enumerate(self._handlers[event_type]):
                 handler = ref()
                 if handler is not None:
                     active.append(handler)
@@ -364,20 +397,16 @@ class EventBus:
             handler(event)
         except Exception as e:
             logger.error(f"Event handler error for {event.type.name}: {e}", exc_info=True)
-            self._stats['handler_errors'] += 1
+            self._stats["handler_errors"] += 1
 
-    def get_history(
-        self,
-        event_type: Optional[EventType] = None,
-        limit: int = 100
-    ) -> List[Event]:
+    def get_history(self, event_type: EventType | None = None, limit: int = 100) -> list[Event]:
         """Obtiene historial de eventos."""
         events = list(self._event_history)
         if event_type:
             events = [e for e in events if e.type == event_type]
         return events[-limit:]
 
-    def clear_history(self, older_than: Optional[float] = None) -> int:
+    def clear_history(self, older_than: float | None = None) -> int:
         """
         Limpia el historial de eventos.
 
@@ -396,12 +425,11 @@ class EventBus:
 
         original_len = len(self._event_history)
         self._event_history = deque(
-            (e for e in self._event_history if e.timestamp >= older_than),
-            maxlen=self._max_history
+            (e for e in self._event_history if e.timestamp >= older_than), maxlen=self._max_history
         )
         return original_len - len(self._event_history)
 
-    def get_stats(self) -> Dict[str, int]:
+    def get_stats(self) -> dict[str, int]:
         """Estadísticas del bus de eventos."""
         return dict(self._stats)
 
@@ -413,7 +441,7 @@ class EventBus:
 
 # v3.0 FIX: Singleton thread-safe con lock
 # v3.1: Added reset_event_bus() for testing/isolation
-_event_bus: Optional[EventBus] = None
+_event_bus: EventBus | None = None
 _event_bus_lock = threading.Lock()
 
 
@@ -457,15 +485,16 @@ def reset_event_bus() -> None:
 # READ-WRITE LOCK (v3.0 - con timeout)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class RWLock:
     """
     Read-Write Lock que permite múltiples lectores o un único escritor.
-    
+
     v3.0: Timeout configurable para evitar deadlocks.
     Prioriza escritores para evitar starvation.
     """
 
-    __slots__ = ('_read_ready', '_readers', '_writers_waiting', '_writer_active')
+    __slots__ = ("_read_ready", "_readers", "_writer_active", "_writers_waiting")
 
     _DEFAULT_TIMEOUT: ClassVar[float] = 30.0
 
@@ -476,7 +505,7 @@ class RWLock:
         self._writer_active = False
 
     @contextmanager
-    def read_lock(self, timeout: Optional[float] = None):
+    def read_lock(self, timeout: float | None = None):
         """Adquiere lock de lectura con timeout opcional."""
         timeout = timeout or self._DEFAULT_TIMEOUT
         deadline = time.monotonic() + timeout
@@ -485,9 +514,7 @@ class RWLock:
             while self._writer_active or self._writers_waiting > 0:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise TimeoutError(
-                        f"RWLock read_lock timeout after {timeout}s"
-                    )
+                    raise TimeoutError(f"RWLock read_lock timeout after {timeout}s")
                 self._read_ready.wait(timeout=remaining)
             self._readers += 1
         try:
@@ -499,7 +526,7 @@ class RWLock:
                     self._read_ready.notify_all()
 
     @contextmanager
-    def write_lock(self, timeout: Optional[float] = None):
+    def write_lock(self, timeout: float | None = None):
         """Adquiere lock de escritura con timeout opcional.
 
         Phase 1 fix (B1): refactor a try/finally — el bare ``except:`` original
@@ -516,9 +543,7 @@ class RWLock:
                 while self._readers > 0 or self._writer_active:
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
-                        raise TimeoutError(
-                            f"RWLock write_lock timeout after {timeout}s"
-                        )
+                        raise TimeoutError(f"RWLock write_lock timeout after {timeout}s")
                     self._read_ready.wait(timeout=remaining)
                 self._writer_active = True
             finally:
@@ -535,27 +560,29 @@ class RWLock:
 # COORDENADAS HEXAGONALES OPTIMIZADAS
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class HexDirection(IntEnum):
     """
     6 direcciones en el grid hexagonal.
     Ordenadas en sentido horario desde arriba-derecha.
     """
-    NE = 0   # Noreste   (+1, -1)
-    E = 1    # Este      (+1,  0)
-    SE = 2   # Sureste   ( 0, +1)
-    SW = 3   # Suroeste  (-1, +1)
-    W = 4    # Oeste     (-1,  0)
-    NW = 5   # Noroeste  ( 0, -1)
 
-    def opposite(self) -> 'HexDirection':
+    NE = 0  # Noreste   (+1, -1)
+    E = 1  # Este      (+1,  0)
+    SE = 2  # Sureste   ( 0, +1)
+    SW = 3  # Suroeste  (-1, +1)
+    W = 4  # Oeste     (-1,  0)
+    NW = 5  # Noroeste  ( 0, -1)
+
+    def opposite(self) -> HexDirection:
         """Retorna la dirección opuesta."""
         return HexDirection((self + 3) % 6)
 
-    def rotate_cw(self, steps: int = 1) -> 'HexDirection':
+    def rotate_cw(self, steps: int = 1) -> HexDirection:
         """Rotar en sentido horario."""
         return HexDirection((self + steps) % 6)
 
-    def rotate_ccw(self, steps: int = 1) -> 'HexDirection':
+    def rotate_ccw(self, steps: int = 1) -> HexDirection:
         """Rotar en sentido antihorario."""
         return HexDirection((self - steps) % 6)
 
@@ -565,7 +592,7 @@ class HexDirection(IntEnum):
         return _DIRECTION_VECTORS[self]
 
     @classmethod
-    def from_angle(cls, angle_deg: float) -> 'HexDirection':
+    def from_angle(cls, angle_deg: float) -> HexDirection:
         """Obtiene la dirección más cercana a un ángulo."""
         normalized = angle_deg % 360
         index = round(normalized / 60) % 6
@@ -573,13 +600,13 @@ class HexDirection(IntEnum):
 
 
 # Vectores de dirección precalculados (inmutables)
-_DIRECTION_VECTORS: Final[Tuple[CoordTuple, ...]] = (
-    (1, -1),   # NE
-    (1, 0),    # E
-    (0, 1),    # SE
-    (-1, 1),   # SW
-    (-1, 0),   # W
-    (0, -1),   # NW
+_DIRECTION_VECTORS: Final[tuple[CoordTuple, ...]] = (
+    (1, -1),  # NE
+    (1, 0),  # E
+    (0, 1),  # SE
+    (-1, 1),  # SW
+    (-1, 0),  # W
+    (0, -1),  # NW
 )
 
 # Arrays NumPy para operaciones vectoriales
@@ -594,15 +621,16 @@ class HexCoord:
     Inmutable y hasheable para usar como clave de diccionario.
     La tercera coordenada s es implícita: s = -q - r
     """
+
     q: int
     r: int
 
     def __post_init__(self):
         """Validación y coerción de tipos."""
         if not isinstance(self.q, int):
-            object.__setattr__(self, 'q', int(self.q))
+            object.__setattr__(self, "q", int(self.q))
         if not isinstance(self.r, int):
-            object.__setattr__(self, 'r', int(self.r))
+            object.__setattr__(self, "r", int(self.r))
 
     @property
     def s(self) -> int:
@@ -626,47 +654,47 @@ class HexCoord:
         """Distancia desde el origen."""
         return (abs(self.q) + abs(self.r) + abs(self.s)) // 2
 
-    def __add__(self, other: 'HexCoord') -> 'HexCoord':
+    def __add__(self, other: HexCoord) -> HexCoord:
         if isinstance(other, HexCoord):
             return HexCoord(self.q + other.q, self.r + other.r)
         return NotImplemented
 
-    def __sub__(self, other: 'HexCoord') -> 'HexCoord':
+    def __sub__(self, other: HexCoord) -> HexCoord:
         if isinstance(other, HexCoord):
             return HexCoord(self.q - other.q, self.r - other.r)
         return NotImplemented
 
-    def __mul__(self, scalar: int) -> 'HexCoord':
+    def __mul__(self, scalar: int) -> HexCoord:
         if isinstance(scalar, (int, np.integer)):
             return HexCoord(self.q * scalar, self.r * scalar)
         return NotImplemented
 
-    def __rmul__(self, scalar: int) -> 'HexCoord':
+    def __rmul__(self, scalar: int) -> HexCoord:
         return self.__mul__(scalar)
 
-    def __neg__(self) -> 'HexCoord':
+    def __neg__(self) -> HexCoord:
         return HexCoord(-self.q, -self.r)
 
     def __abs__(self) -> int:
         return self.magnitude
 
-    def distance_to(self, other: 'HexCoord') -> int:
+    def distance_to(self, other: HexCoord) -> int:
         """Distancia de Manhattan hexagonal."""
         dq = abs(self.q - other.q)
         dr = abs(self.r - other.r)
         ds = abs(self.s - other.s)
         return (dq + dr + ds) // 2
 
-    def neighbor(self, direction: HexDirection) -> 'HexCoord':
+    def neighbor(self, direction: HexDirection) -> HexCoord:
         """Obtiene el vecino en la dirección dada."""
         dq, dr = direction.vector
         return HexCoord(self.q + dq, self.r + dr)
 
-    def neighbors(self) -> Tuple['HexCoord', ...]:
+    def neighbors(self) -> tuple[HexCoord, ...]:
         """Retorna los 6 vecinos en orden horario desde NE."""
         return tuple(self.neighbor(d) for d in HexDirection)
 
-    def direction_to(self, other: 'HexCoord') -> Optional[HexDirection]:
+    def direction_to(self, other: HexCoord) -> HexDirection | None:
         """Obtiene la dirección hacia otra coordenada adyacente."""
         diff = (other.q - self.q, other.r - self.r)
         for d in HexDirection:
@@ -674,21 +702,21 @@ class HexCoord:
                 return d
         return None
 
-    def ring(self, radius: int) -> Tuple['HexCoord', ...]:
+    def ring(self, radius: int) -> tuple[HexCoord, ...]:
         """Retorna todas las celdas en el anillo a distancia `radius`."""
         return _cached_ring(self.q, self.r, radius)
 
-    def spiral(self, radius: int) -> Iterator['HexCoord']:
+    def spiral(self, radius: int) -> Iterator[HexCoord]:
         """Genera celdas en espiral desde el centro hasta radio `radius`."""
         yield self
         for ring_r in range(1, radius + 1):
             yield from self.ring(ring_r)
 
-    def filled_hexagon(self, radius: int) -> Tuple['HexCoord', ...]:
+    def filled_hexagon(self, radius: int) -> tuple[HexCoord, ...]:
         """Retorna todas las celdas dentro del radio (inclusive)."""
         return _cached_filled_hex(self.q, self.r, radius)
 
-    def line_to(self, other: 'HexCoord') -> List['HexCoord']:
+    def line_to(self, other: HexCoord) -> list[HexCoord]:
         """Genera línea recta desde self hasta other usando interpolación."""
         n = self.distance_to(other)
         if n == 0:
@@ -704,14 +732,14 @@ class HexCoord:
 
         return results
 
-    def lerp(self, other: 'HexCoord', t: float) -> 'HexCoord':
+    def lerp(self, other: HexCoord, t: float) -> HexCoord:
         """Interpolación lineal entre dos coordenadas."""
         q = self.q + (other.q - self.q) * t
         r = self.r + (other.r - self.r) * t
         s = self.s + (other.s - self.s) * t
         return _cube_round(q, r, s)
 
-    def rotate_around(self, center: 'HexCoord', steps: int = 1) -> 'HexCoord':
+    def rotate_around(self, center: HexCoord, steps: int = 1) -> HexCoord:
         """Rota esta coordenada alrededor de un centro (steps * 60°)."""
         vec = self - center
         q, r, s = vec.q, vec.r, vec.s
@@ -721,7 +749,7 @@ class HexCoord:
 
         return center + HexCoord(q, r)
 
-    def reflect_across(self, axis: HexDirection) -> 'HexCoord':
+    def reflect_across(self, axis: HexDirection) -> HexCoord:
         """Refleja la coordenada a través de un eje."""
         q, r, s = self.q, self.r, self.s
 
@@ -732,9 +760,9 @@ class HexCoord:
         else:  # NW, SE
             return HexCoord(r, q)
 
-    def to_pixel(self, size: float = 1.0, orientation: str = 'flat') -> PixelTuple:
+    def to_pixel(self, size: float = 1.0, orientation: str = "flat") -> PixelTuple:
         """Convierte a coordenadas de pixel."""
-        if orientation == 'flat':
+        if orientation == "flat":
             x = size * (3 / 2 * self.q)
             y = size * (math.sqrt(3) / 2 * self.q + math.sqrt(3) * self.r)
         else:
@@ -744,10 +772,10 @@ class HexCoord:
 
     @classmethod
     def from_pixel(
-        cls, x: float, y: float, size: float = 1.0, orientation: str = 'flat'
-    ) -> 'HexCoord':
+        cls, x: float, y: float, size: float = 1.0, orientation: str = "flat"
+    ) -> HexCoord:
         """Convierte coordenadas de pixel a hexagonal."""
-        if orientation == 'flat':
+        if orientation == "flat":
             q = (2 / 3 * x) / size
             r = (-1 / 3 * x + math.sqrt(3) / 3 * y) / size
         else:
@@ -757,18 +785,18 @@ class HexCoord:
         return _cube_round(q, r, -q - r)
 
     @classmethod
-    def origin(cls) -> 'HexCoord':
+    def origin(cls) -> HexCoord:
         """Retorna el origen (0, 0)."""
         return _ORIGIN
 
-    def to_dict(self) -> Dict[str, int]:
+    def to_dict(self) -> dict[str, int]:
         """Serializa a diccionario."""
-        return {'q': self.q, 'r': self.r}
+        return {"q": self.q, "r": self.r}
 
     @classmethod
-    def from_dict(cls, data: Dict[str, int]) -> 'HexCoord':
+    def from_dict(cls, data: dict[str, int]) -> HexCoord:
         """Deserializa desde diccionario."""
-        return cls(data['q'], data['r'])
+        return cls(data["q"], data["r"])
 
 
 # Constante para origen
@@ -776,7 +804,7 @@ _ORIGIN = HexCoord(0, 0)
 
 
 @lru_cache(maxsize=1024)
-def _cached_ring(q: int, r: int, radius: int) -> Tuple[HexCoord, ...]:
+def _cached_ring(q: int, r: int, radius: int) -> tuple[HexCoord, ...]:
     """Genera anillo con cache."""
     if radius == 0:
         return (HexCoord(q, r),)
@@ -795,10 +823,10 @@ def _cached_ring(q: int, r: int, radius: int) -> Tuple[HexCoord, ...]:
 
 
 @lru_cache(maxsize=256)
-def _cached_filled_hex(q: int, r: int, radius: int) -> Tuple[HexCoord, ...]:
+def _cached_filled_hex(q: int, r: int, radius: int) -> tuple[HexCoord, ...]:
     """
     Genera hexágono relleno con cache.
-    
+
     v3.0 FIX: Renombrado variable de loop a `ring_r` para evitar
     shadowing del parámetro `r`.
     """
@@ -831,28 +859,29 @@ def _cube_round(q: float, r: float, s: float) -> HexCoord:
 # UTILIDADES DE COORDENADAS
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class HexRegion:
     """
     Región de coordenadas hexagonales para operaciones en lote.
     """
 
-    __slots__ = ('_coords', '_coord_set', '_bounds')
+    __slots__ = ("_bounds", "_coord_set", "_coords")
 
     def __init__(self, coords: Sequence[HexCoord]):
         self._coords = tuple(coords)
         self._coord_set = frozenset(coords)
-        self._bounds: Optional[Tuple[int, int, int, int]] = None
+        self._bounds: tuple[int, int, int, int] | None = None
 
     @classmethod
-    def from_ring(cls, center: HexCoord, radius: int) -> 'HexRegion':
+    def from_ring(cls, center: HexCoord, radius: int) -> HexRegion:
         return cls(center.ring(radius))
 
     @classmethod
-    def from_area(cls, center: HexCoord, radius: int) -> 'HexRegion':
+    def from_area(cls, center: HexCoord, radius: int) -> HexRegion:
         return cls(center.filled_hexagon(radius))
 
     @classmethod
-    def from_line(cls, start: HexCoord, end: HexCoord) -> 'HexRegion':
+    def from_line(cls, start: HexCoord, end: HexCoord) -> HexRegion:
         return cls(start.line_to(end))
 
     def __contains__(self, coord: HexCoord) -> bool:
@@ -865,7 +894,7 @@ class HexRegion:
         return len(self._coords)
 
     @property
-    def bounds(self) -> Tuple[int, int, int, int]:
+    def bounds(self) -> tuple[int, int, int, int]:
         """Retorna (min_q, max_q, min_r, max_r)."""
         if self._bounds is None:
             if not self._coords:
@@ -876,13 +905,13 @@ class HexRegion:
                 self._bounds = (min(qs), max(qs), min(rs), max(rs))
         return self._bounds
 
-    def union(self, other: 'HexRegion') -> 'HexRegion':
+    def union(self, other: HexRegion) -> HexRegion:
         return HexRegion(list(self._coord_set | other._coord_set))
 
-    def intersection(self, other: 'HexRegion') -> 'HexRegion':
+    def intersection(self, other: HexRegion) -> HexRegion:
         return HexRegion(list(self._coord_set & other._coord_set))
 
-    def difference(self, other: 'HexRegion') -> 'HexRegion':
+    def difference(self, other: HexRegion) -> HexRegion:
         return HexRegion(list(self._coord_set - other._coord_set))
 
     @property
@@ -902,27 +931,24 @@ HexRing = HexRegion
 class HexPathfinder:
     """
     Pathfinding A* optimizado para grids hexagonales.
-    
+
     v3.0: Soporte para costos variables por celda.
     """
 
     def __init__(
         self,
         walkable_check: Callable[[HexCoord], bool],
-        cost_fn: Optional[Callable[[HexCoord], float]] = None
+        cost_fn: Callable[[HexCoord], float] | None = None,
     ):
         self._walkable = walkable_check
         self._cost_fn = cost_fn or (lambda _: 1.0)
 
     def find_path(
-        self,
-        start: HexCoord,
-        goal: HexCoord,
-        max_iterations: int = 10000
-    ) -> Optional[List[HexCoord]]:
+        self, start: HexCoord, goal: HexCoord, max_iterations: int = 10000
+    ) -> list[HexCoord] | None:
         """
         Encuentra el camino más corto usando A*.
-        
+
         v3.0: Soporta costos variables por celda via cost_fn.
         """
         if start == goal:
@@ -931,9 +957,9 @@ class HexPathfinder:
         if not self._walkable(goal):
             return None
 
-        open_set: List[Tuple[float, int, HexCoord]] = [(0.0, 0, start)]
-        came_from: Dict[HexCoord, HexCoord] = {}
-        g_score: Dict[HexCoord, float] = {start: 0.0}
+        open_set: list[tuple[float, int, HexCoord]] = [(0.0, 0, start)]
+        came_from: dict[HexCoord, HexCoord] = {}
+        g_score: dict[HexCoord, float] = {start: 0.0}
 
         counter = 0
         iterations = 0
@@ -945,7 +971,7 @@ class HexPathfinder:
             if current == goal:
                 return self._reconstruct_path(came_from, current)
 
-            current_g = g_score.get(current, float('inf'))
+            current_g = g_score.get(current, float("inf"))
 
             for neighbor in current.neighbors():
                 if not self._walkable(neighbor):
@@ -954,7 +980,7 @@ class HexPathfinder:
                 move_cost = self._cost_fn(neighbor)
                 tentative_g = current_g + move_cost
 
-                if tentative_g < g_score.get(neighbor, float('inf')):
+                if tentative_g < g_score.get(neighbor, float("inf")):
                     came_from[neighbor] = current
                     g_score[neighbor] = tentative_g
                     f = tentative_g + neighbor.distance_to(goal)
@@ -964,10 +990,8 @@ class HexPathfinder:
         return None
 
     def _reconstruct_path(
-        self,
-        came_from: Dict[HexCoord, HexCoord],
-        current: HexCoord
-    ) -> List[HexCoord]:
+        self, came_from: dict[HexCoord, HexCoord], current: HexCoord
+    ) -> list[HexCoord]:
         """Reconstruye el camino desde came_from."""
         path = [current]
         while current in came_from:
@@ -981,8 +1005,10 @@ class HexPathfinder:
 # SISTEMA DE FEROMONAS AVANZADO
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class PheromoneType(Enum):
     """Tipos de feromonas para comunicación estigmérgica."""
+
     FOOD = auto()
     DANGER = auto()
     PATH = auto()
@@ -995,10 +1021,11 @@ class PheromoneType(Enum):
 @dataclass(slots=True)
 class PheromoneDeposit:
     """Depósito de feromona con metadatos."""
+
     ptype: PheromoneType
     intensity: float
     timestamp: float = field(default_factory=time.time)
-    source_coord: Optional[HexCoord] = None
+    source_coord: HexCoord | None = None
     decay_rate: float = 0.1
 
     def decay(self, elapsed: float = 1.0) -> float:
@@ -1017,14 +1044,14 @@ class PheromoneDeposit:
 class PheromoneField:
     """
     Campo de feromonas para una celda.
-    
+
     v3.0: batch_decay con NumPy para mejor rendimiento.
     """
 
-    __slots__ = ('_deposits', '_total_intensity', '_lock')
+    __slots__ = ("_deposits", "_lock", "_total_intensity")
 
     def __init__(self):
-        self._deposits: Dict[PheromoneType, PheromoneDeposit] = {}
+        self._deposits: dict[PheromoneType, PheromoneDeposit] = {}
         self._total_intensity: float = 0.0
         self._lock = threading.Lock()
 
@@ -1032,22 +1059,19 @@ class PheromoneField:
         self,
         ptype: PheromoneType,
         amount: float,
-        source: Optional[HexCoord] = None,
-        decay_rate: float = 0.1
+        source: HexCoord | None = None,
+        decay_rate: float = 0.1,
     ) -> None:
         """Deposita feromona de un tipo."""
         with self._lock:
             if ptype in self._deposits:
-                self._deposits[ptype].intensity = min(
-                    1.0,
-                    self._deposits[ptype].intensity + amount
-                )
+                self._deposits[ptype].intensity = min(1.0, self._deposits[ptype].intensity + amount)
             else:
                 self._deposits[ptype] = PheromoneDeposit(
                     ptype=ptype,
                     intensity=min(1.0, amount),
                     source_coord=source,
-                    decay_rate=decay_rate
+                    decay_rate=decay_rate,
                 )
             self._update_total()
 
@@ -1077,21 +1101,18 @@ class PheromoneField:
         return self._total_intensity
 
     @property
-    def dominant_type(self) -> Optional[PheromoneType]:
+    def dominant_type(self) -> PheromoneType | None:
         if not self._deposits:
             return None
         return max(self._deposits.items(), key=lambda x: x[1].intensity)[0]
 
-    def get_gradient_vector(self) -> Dict[PheromoneType, float]:
+    def get_gradient_vector(self) -> dict[PheromoneType, float]:
         """v3.0: Retorna vector de intensidades por tipo."""
         return {ptype: dep.intensity for ptype, dep in self._deposits.items()}
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
-            ptype.name: {
-                'intensity': dep.intensity,
-                'decay_rate': dep.decay_rate
-            }
+            ptype.name: {"intensity": dep.intensity, "decay_rate": dep.decay_rate}
             for ptype, dep in self._deposits.items()
         }
 
@@ -1100,8 +1121,10 @@ class PheromoneField:
 # ESTADOS Y ROLES DE CELDAS
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class CellState(Enum):
     """Estado de una celda del panal."""
+
     EMPTY = auto()
     ACTIVE = auto()
     IDLE = auto()
@@ -1115,6 +1138,7 @@ class CellState(Enum):
 
 class CellRole(Enum):
     """Rol especializado de una celda."""
+
     QUEEN = auto()
     WORKER = auto()
     DRONE = auto()
@@ -1128,26 +1152,34 @@ class CellRole(Enum):
 # CIRCUIT BREAKER (v3.0 - nuevo)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class CircuitState(Enum):
     """Estado del circuit breaker."""
-    CLOSED = auto()      # Funcionando normal
-    OPEN = auto()        # Abierto, rechazando operaciones
-    HALF_OPEN = auto()   # Probando recuperación
+
+    CLOSED = auto()  # Funcionando normal
+    OPEN = auto()  # Abierto, rechazando operaciones
+    HALF_OPEN = auto()  # Probando recuperación
 
 
 class CircuitBreaker:
     """
     Circuit breaker con backoff exponencial para protección de celdas.
-    
+
     Previene cascadas de fallos cerrando el circuito cuando una celda
     falla repetidamente, con recovery automático.
     """
 
     __slots__ = (
-        '_state', '_failure_count', '_failure_threshold',
-        '_recovery_timeout', '_last_failure_time',
-        '_success_count_in_half_open', '_success_threshold',
-        '_lock', '_backoff_multiplier', '_max_recovery_timeout'
+        "_backoff_multiplier",
+        "_failure_count",
+        "_failure_threshold",
+        "_last_failure_time",
+        "_lock",
+        "_max_recovery_timeout",
+        "_recovery_timeout",
+        "_state",
+        "_success_count_in_half_open",
+        "_success_threshold",
     )
 
     def __init__(
@@ -1156,7 +1188,7 @@ class CircuitBreaker:
         recovery_timeout: float = 5.0,
         success_threshold: int = 2,
         backoff_multiplier: float = 2.0,
-        max_recovery_timeout: float = 300.0
+        max_recovery_timeout: float = 300.0,
     ):
         self._state = CircuitState.CLOSED
         self._failure_count = 0
@@ -1202,8 +1234,7 @@ class CircuitBreaker:
             if self._state == CircuitState.HALF_OPEN:
                 self._state = CircuitState.OPEN
                 self._recovery_timeout = min(
-                    self._max_recovery_timeout,
-                    self._recovery_timeout * self._backoff_multiplier
+                    self._max_recovery_timeout, self._recovery_timeout * self._backoff_multiplier
                 )
             elif (
                 self._state == CircuitState.CLOSED
@@ -1223,17 +1254,18 @@ class CircuitBreaker:
             self._failure_count = 0
             self._success_count_in_half_open = 0
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
-            'state': self.state.name,
-            'failure_count': self._failure_count,
-            'recovery_timeout': self._recovery_timeout,
+            "state": self.state.name,
+            "failure_count": self._failure_count,
+            "recovery_timeout": self._recovery_timeout,
         }
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # CONFIGURACIÓN DEL PANAL (v3.0 - validación robusta)
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 @dataclass
 class HoneycombConfig:
@@ -1273,7 +1305,7 @@ class HoneycombConfig:
     max_steal_per_tick: int = 2
 
     # Topología
-    topology: str = 'flat'  # 'flat', 'torus', 'sphere'
+    topology: str = "flat"  # 'flat', 'torus', 'sphere'
 
     # Métricas
     metrics_history_size: int = 1000
@@ -1320,7 +1352,7 @@ class HoneycombConfig:
             raise ValueError(
                 f"pheromone_decay_rate must be in [0, 1], got {self.pheromone_decay_rate}"
             )
-        if self.topology not in ('flat', 'torus', 'sphere'):
+        if self.topology not in ("flat", "torus", "sphere"):
             raise ValueError(f"invalid topology: {self.topology!r}")
         if self.steal_threshold_low >= self.steal_threshold_high:
             raise ValueError(
@@ -1336,11 +1368,11 @@ class HoneycombConfig:
     def total_cells(self) -> int:
         return 1 + 3 * self.radius * (self.radius + 1)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'HoneycombConfig':
+    def from_dict(cls, data: dict[str, Any]) -> HoneycombConfig:
         # Filtrar solo campos conocidos para forward-compatibility
         known_fields = {f.name for f in cls.__dataclass_fields__.values()}
         filtered = {k: v for k, v in data.items() if k in known_fields}
@@ -1349,6 +1381,7 @@ class HoneycombConfig:
 
 class GridTopology(Enum):
     """Topología del grid hexagonal."""
+
     FLAT = auto()
     TORUS = auto()
     SPHERE = auto()
@@ -1359,9 +1392,11 @@ class GridTopology(Enum):
 # MÉTRICAS Y ESTADÍSTICAS
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 @dataclass(slots=True)
 class CellMetrics:
     """Métricas de una celda individual."""
+
     coord: HexCoord
     role: CellRole
     state: CellState
@@ -1372,27 +1407,28 @@ class CellMetrics:
     pheromone_total: float
     neighbor_count: int
     last_activity: float
-    circuit_state: str = 'CLOSED'  # v3.0
+    circuit_state: str = "CLOSED"  # v3.0
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
-            'coord': self.coord.to_dict(),
-            'role': self.role.name,
-            'state': self.state.name,
-            'load': self.load,
-            'vcore_count': self.vcore_count,
-            'error_count': self.error_count,
-            'ticks_processed': self.ticks_processed,
-            'pheromone_total': self.pheromone_total,
-            'neighbor_count': self.neighbor_count,
-            'last_activity': self.last_activity,
-            'circuit_state': self.circuit_state,
+            "coord": self.coord.to_dict(),
+            "role": self.role.name,
+            "state": self.state.name,
+            "load": self.load,
+            "vcore_count": self.vcore_count,
+            "error_count": self.error_count,
+            "ticks_processed": self.ticks_processed,
+            "pheromone_total": self.pheromone_total,
+            "neighbor_count": self.neighbor_count,
+            "last_activity": self.last_activity,
+            "circuit_state": self.circuit_state,
         }
 
 
 @dataclass(slots=True)
 class GridMetrics:
     """Métricas agregadas del grid."""
+
     timestamp: float
     total_cells: int
     active_cells: int
@@ -1408,17 +1444,14 @@ class GridMetrics:
     errors_per_second: float
     work_steals: int
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
 class MetricsCollector:
     """Colector de métricas thread-safe con historial y agregaciones."""
 
-    __slots__ = (
-        '_history', '_max_history', '_sample_rate',
-        '_last_sample', '_lock', '_counters'
-    )
+    __slots__ = ("_counters", "_history", "_last_sample", "_lock", "_max_history", "_sample_rate")
 
     def __init__(self, max_history: int = 1000, sample_rate: float = 1.0):
         self._history: deque = deque(maxlen=max_history)
@@ -1426,7 +1459,7 @@ class MetricsCollector:
         self._sample_rate = sample_rate
         self._last_sample = 0.0
         self._lock = threading.Lock()
-        self._counters: Dict[str, int] = defaultdict(int)
+        self._counters: dict[str, int] = defaultdict(int)
 
     def record(self, metrics: GridMetrics) -> None:
         current = time.time()
@@ -1442,32 +1475,33 @@ class MetricsCollector:
     def get_counter(self, counter: str) -> int:
         return self._counters.get(counter, 0)
 
-    def get_history(self, limit: Optional[int] = None) -> List[GridMetrics]:
+    def get_history(self, limit: int | None = None) -> list[GridMetrics]:
         with self._lock:
             if limit:
                 return list(self._history)[-limit:]
             return list(self._history)
 
-    def get_latest(self) -> Optional[GridMetrics]:
+    def get_latest(self) -> GridMetrics | None:
         with self._lock:
             return self._history[-1] if self._history else None
 
-    def get_averages(self, window: int = 60) -> Dict[str, float]:
+    def get_averages(self, window: int = 60) -> dict[str, float]:
         history = self.get_history(window)
         if not history:
             return {}
 
         return {
-            'avg_load': float(np.mean([m.average_load for m in history])),
-            'avg_vcores': float(np.mean([m.total_vcores for m in history])),
-            'avg_tps': float(np.mean([m.ticks_per_second for m in history])),
-            'avg_errors': float(np.mean([m.errors_per_second for m in history])),
+            "avg_load": float(np.mean([m.average_load for m in history])),
+            "avg_vcores": float(np.mean([m.total_vcores for m in history])),
+            "avg_tps": float(np.mean([m.ticks_per_second for m in history])),
+            "avg_errors": float(np.mean([m.errors_per_second for m in history])),
         }
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # CELDA BASE DEL PANAL (v3.0)
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 class HoneycombCell:
     """
@@ -1480,20 +1514,32 @@ class HoneycombCell:
     """
 
     __slots__ = (
-        'coord', 'role', '_state', '_vcores', '_load',
-        '_neighbors', '_rw_lock', '_metadata', '_pheromone_field',
-        '_last_activity', '_error_count', '_config', '_event_bus',
-        '_ticks_processed', '_state_callbacks', '_creation_time',
-        '_circuit_breaker',
-        '__weakref__'
+        "__weakref__",
+        "_circuit_breaker",
+        "_config",
+        "_creation_time",
+        "_error_count",
+        "_event_bus",
+        "_last_activity",
+        "_load",
+        "_metadata",
+        "_neighbors",
+        "_pheromone_field",
+        "_rw_lock",
+        "_state",
+        "_state_callbacks",
+        "_ticks_processed",
+        "_vcores",
+        "coord",
+        "role",
     )
 
     def __init__(
         self,
         coord: HexCoord,
         role: CellRole = CellRole.WORKER,
-        config: Optional[HoneycombConfig] = None,
-        event_bus: Optional[EventBus] = None
+        config: HoneycombConfig | None = None,
+        event_bus: EventBus | None = None,
     ):
         if not isinstance(coord, HexCoord):
             raise TypeError(f"coord must be HexCoord, got {type(coord)}")
@@ -1501,24 +1547,22 @@ class HoneycombCell:
         self.coord = coord
         self.role = role
         self._state = CellState.EMPTY
-        self._vcores: List[Any] = []
+        self._vcores: list[Any] = []
         self._load: float = 0.0
-        self._neighbors: Dict[HexDirection, Optional['HoneycombCell']] = {
-            d: None for d in HexDirection
-        }
+        self._neighbors: dict[HexDirection, HoneycombCell | None] = {d: None for d in HexDirection}
         self._rw_lock = RWLock()
-        self._metadata: Dict[str, Any] = {}
+        self._metadata: dict[str, Any] = {}
         self._pheromone_field = PheromoneField()
         self._last_activity: float = time.time()
         self._error_count: int = 0
         self._config = config or HoneycombConfig()
         self._event_bus = event_bus or get_event_bus()
         self._ticks_processed: int = 0
-        self._state_callbacks: List[Callable[[CellState, CellState], None]] = []
+        self._state_callbacks: list[Callable[[CellState, CellState], None]] = []
         self._creation_time = time.time()
         self._circuit_breaker = CircuitBreaker(
             failure_threshold=self._config.max_consecutive_errors,
-            recovery_timeout=self._config.circuit_breaker_recovery_s
+            recovery_timeout=self._config.circuit_breaker_recovery_s,
         )
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -1543,11 +1587,13 @@ class HoneycombCell:
             except Exception as e:
                 logger.error(f"State callback error: {e}")
 
-        self._event_bus.publish(Event(
-            type=EventType.CELL_STATE_CHANGED,
-            source=self,
-            data={'old': old_state.name, 'new': new_state.name}
-        ))
+        self._event_bus.publish(
+            Event(
+                type=EventType.CELL_STATE_CHANGED,
+                source=self,
+                data={"old": old_state.name, "new": new_state.name},
+            )
+        )
 
     # ─────────────────────────────────────────────────────────────────────────
     # PROPIEDADES
@@ -1605,15 +1651,12 @@ class HoneycombCell:
     # GESTIÓN DE VECINOS
     # ─────────────────────────────────────────────────────────────────────────
 
-    def get_neighbor(self, direction: HexDirection) -> Optional['HoneycombCell']:
+    def get_neighbor(self, direction: HexDirection) -> HoneycombCell | None:
         with self._rw_lock.read_lock():
             return self._neighbors.get(direction)
 
     def set_neighbor(
-        self,
-        direction: HexDirection,
-        cell: Optional['HoneycombCell'],
-        bidirectional: bool = False
+        self, direction: HexDirection, cell: HoneycombCell | None, bidirectional: bool = False
     ) -> None:
         with self._rw_lock.write_lock():
             self._neighbors[direction] = cell
@@ -1621,17 +1664,13 @@ class HoneycombCell:
         if bidirectional and cell is not None:
             cell.set_neighbor(direction.opposite(), self, bidirectional=False)
 
-    def get_all_neighbors(self) -> List['HoneycombCell']:
+    def get_all_neighbors(self) -> list[HoneycombCell]:
         with self._rw_lock.read_lock():
             return [n for n in self._neighbors.values() if n is not None]
 
-    def get_neighbor_loads(self) -> Dict[HexDirection, float]:
+    def get_neighbor_loads(self) -> dict[HexDirection, float]:
         with self._rw_lock.read_lock():
-            return {
-                d: n.load
-                for d, n in self._neighbors.items()
-                if n is not None
-            }
+            return {d: n.load for d, n in self._neighbors.items() if n is not None}
 
     # ─────────────────────────────────────────────────────────────────────────
     # GESTIÓN DE vCORES
@@ -1651,11 +1690,13 @@ class HoneycombCell:
             if self._state == CellState.EMPTY:
                 self._set_state(CellState.IDLE)
 
-            self._event_bus.publish(Event(
-                type=EventType.VCORE_ASSIGNED,
-                source=self,
-                data={'vcore_count': len(self._vcores)}
-            ))
+            self._event_bus.publish(
+                Event(
+                    type=EventType.VCORE_ASSIGNED,
+                    source=self,
+                    data={"vcore_count": len(self._vcores)},
+                )
+            )
 
             return True
 
@@ -1670,17 +1711,19 @@ class HoneycombCell:
                 if not self._vcores:
                     self._set_state(CellState.EMPTY)
 
-                self._event_bus.publish(Event(
-                    type=EventType.VCORE_REMOVED,
-                    source=self,
-                    data={'vcore_count': len(self._vcores)}
-                ))
+                self._event_bus.publish(
+                    Event(
+                        type=EventType.VCORE_REMOVED,
+                        source=self,
+                        data={"vcore_count": len(self._vcores)},
+                    )
+                )
 
                 return True
             except ValueError:
                 return False
 
-    def get_vcores(self) -> List[Any]:
+    def get_vcores(self) -> list[Any]:
         with self._rw_lock.read_lock():
             return list(self._vcores)
 
@@ -1690,11 +1733,14 @@ class HoneycombCell:
         self._load = len(self._vcores) / max(1, self._config.vcores_per_cell)
 
         if abs(old_load - self._load) > self._config.load_change_event_threshold:
-            self._event_bus.publish(Event(
-                type=EventType.CELL_LOAD_CHANGED,
-                source=self,
-                data={'old': old_load, 'new': self._load}
-            ), async_=True)
+            self._event_bus.publish(
+                Event(
+                    type=EventType.CELL_LOAD_CHANGED,
+                    source=self,
+                    data={"old": old_load, "new": self._load},
+                ),
+                async_=True,
+            )
 
     # ─────────────────────────────────────────────────────────────────────────
     # SISTEMA DE FEROMONAS
@@ -1704,21 +1750,21 @@ class HoneycombCell:
         self,
         ptype: PheromoneType,
         amount: float,
-        source: Optional[HexCoord] = None,
-        decay_rate: Optional[float] = None
+        source: HexCoord | None = None,
+        decay_rate: float | None = None,
     ) -> None:
         self._pheromone_field.deposit(
-            ptype,
-            amount,
-            source,
-            decay_rate or self._config.pheromone_decay_rate
+            ptype, amount, source, decay_rate or self._config.pheromone_decay_rate
         )
 
-        self._event_bus.publish(Event(
-            type=EventType.PHEROMONE_DEPOSITED,
-            source=self,
-            data={'type': ptype.name, 'amount': amount}
-        ), async_=True)
+        self._event_bus.publish(
+            Event(
+                type=EventType.PHEROMONE_DEPOSITED,
+                source=self,
+                data={"type": ptype.name, "amount": amount},
+            ),
+            async_=True,
+        )
 
     def get_pheromone(self, ptype: PheromoneType) -> float:
         return self._pheromone_field.get_intensity(ptype)
@@ -1736,16 +1782,9 @@ class HoneycombCell:
                 diffuse_amount = intensity * rate / 6
 
                 for neighbor in self.get_all_neighbors():
-                    neighbor.deposit_pheromone(
-                        ptype,
-                        diffuse_amount,
-                        source=self.coord
-                    )
+                    neighbor.deposit_pheromone(ptype, diffuse_amount, source=self.coord)
 
-    def follow_pheromone_gradient(
-        self,
-        ptype: PheromoneType
-    ) -> Optional[HexDirection]:
+    def follow_pheromone_gradient(self, ptype: PheromoneType) -> HexDirection | None:
         """Encuentra la dirección con mayor gradiente de feromona."""
         max_intensity = 0.0
         best_direction = None
@@ -1764,7 +1803,7 @@ class HoneycombCell:
     # PROCESAMIENTO (v3.0: con circuit breaker)
     # ─────────────────────────────────────────────────────────────────────────
 
-    def execute_tick(self) -> Dict[str, Any]:
+    def execute_tick(self) -> dict[str, Any]:
         """Ejecuta un tick de procesamiento con circuit breaker."""
         # v3.0: Verificar circuit breaker antes de ejecutar
         if not self._circuit_breaker.allow_request():
@@ -1783,7 +1822,7 @@ class HoneycombCell:
 
             for vcore in self._vcores:
                 try:
-                    if hasattr(vcore, 'tick'):
+                    if hasattr(vcore, "tick"):
                         result = vcore.tick()
                         results.append(result)
                 except Exception as e:
@@ -1794,16 +1833,20 @@ class HoneycombCell:
 
                     if not self._circuit_breaker.allow_request():
                         self._set_state(CellState.FAILED)
-                        self._event_bus.publish(Event(
-                            type=EventType.CELL_ERROR,
-                            source=self,
-                            data={'errors': self._error_count}
-                        ))
-                        self._event_bus.publish(Event(
-                            type=EventType.CIRCUIT_BREAKER_OPENED,
-                            source=self,
-                            data={'coord': self.coord.to_dict()}
-                        ))
+                        self._event_bus.publish(
+                            Event(
+                                type=EventType.CELL_ERROR,
+                                source=self,
+                                data={"errors": self._error_count},
+                            )
+                        )
+                        self._event_bus.publish(
+                            Event(
+                                type=EventType.CIRCUIT_BREAKER_OPENED,
+                                source=self,
+                                data={"coord": self.coord.to_dict()},
+                            )
+                        )
                         break
 
             self._last_activity = time.time()
@@ -1818,7 +1861,7 @@ class HoneycombCell:
                 "processed": True,
                 "results": results,
                 "errors": errors,
-                "tick": self._ticks_processed
+                "tick": self._ticks_processed,
             }
 
     def recover(self) -> bool:
@@ -1836,11 +1879,7 @@ class HoneycombCell:
 
             self._set_state(CellState.EMPTY)
 
-            self._event_bus.publish(Event(
-                type=EventType.CELL_RECOVERED,
-                source=self,
-                data={}
-            ))
+            self._event_bus.publish(Event(type=EventType.CELL_RECOVERED, source=self, data={}))
 
             return True
 
@@ -1849,8 +1888,7 @@ class HoneycombCell:
     # ─────────────────────────────────────────────────────────────────────────
 
     def on_state_change(
-        self,
-        callback: Callable[[CellState, CellState], None]
+        self, callback: Callable[[CellState, CellState], None]
     ) -> Callable[[], None]:
         self._state_callbacks.append(callback)
 
@@ -1880,7 +1918,7 @@ class HoneycombCell:
                 circuit_state=self._circuit_breaker.state.name,
             )
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         with self._rw_lock.read_lock():
             return {
                 "coord": self.coord.to_dict(),
@@ -1898,10 +1936,7 @@ class HoneycombCell:
             }
 
     def __repr__(self) -> str:
-        return (
-            f"Cell({self.coord.q},{self.coord.r}"
-            f"|{self.role.name}|{self._state.name})"
-        )
+        return f"Cell({self.coord.q},{self.coord.r}" f"|{self.role.name}|{self._state.name})"
 
     def __hash__(self) -> int:
         return hash(self.coord)
@@ -1916,6 +1951,7 @@ class HoneycombCell:
 # CELDAS ESPECIALIZADAS
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class QueenCell(HoneycombCell):
     """
     Celda Reina - Coordinadora del cluster (v3.0).
@@ -1926,20 +1962,24 @@ class QueenCell(HoneycombCell):
     """
 
     __slots__ = (
-        '_worker_registry', '_global_load', '_spawn_queue',
-        '_succession_candidates', '_load_history', '_rebalance_threshold'
+        "_global_load",
+        "_load_history",
+        "_rebalance_threshold",
+        "_spawn_queue",
+        "_succession_candidates",
+        "_worker_registry",
     )
 
-    def __init__(self, coord: HexCoord, config: Optional[HoneycombConfig] = None):
+    def __init__(self, coord: HexCoord, config: HoneycombConfig | None = None):
         super().__init__(coord, CellRole.QUEEN, config)
-        self._worker_registry: Dict[HexCoord, weakref.ref] = {}
+        self._worker_registry: dict[HexCoord, weakref.ref] = {}
         self._global_load: float = 0.0
-        self._spawn_queue: List[Tuple[int, str, Dict]] = []  # v3.0 FIX: (priority, id, spec)
-        self._succession_candidates: List[weakref.ref] = []
+        self._spawn_queue: list[tuple[int, str, dict]] = []  # v3.0 FIX: (priority, id, spec)
+        self._succession_candidates: list[weakref.ref] = []
         self._load_history: deque = deque(maxlen=100)
         self._rebalance_threshold = 0.2
 
-    def register_worker(self, cell: 'WorkerCell') -> None:
+    def register_worker(self, cell: WorkerCell) -> None:
         with self._rw_lock.write_lock():
             self._worker_registry[cell.coord] = weakref.ref(cell)
 
@@ -1947,7 +1987,7 @@ class QueenCell(HoneycombCell):
         with self._rw_lock.write_lock():
             self._worker_registry.pop(coord, None)
 
-    def _get_active_workers(self) -> List['WorkerCell']:
+    def _get_active_workers(self) -> list[WorkerCell]:
         """Obtiene trabajadoras activas (limpia refs muertas)."""
         active = []
         dead = []
@@ -1986,59 +2026,49 @@ class QueenCell(HoneycombCell):
 
             return self._global_load
 
-    def get_load_statistics(self) -> Dict[str, float]:
+    def get_load_statistics(self) -> dict[str, float]:
         workers = self._get_active_workers()
         if not workers:
-            return {'mean': 0, 'std': 0, 'min': 0, 'max': 0, 'p50': 0, 'p90': 0, 'p99': 0}
+            return {"mean": 0, "std": 0, "min": 0, "max": 0, "p50": 0, "p90": 0, "p99": 0}
 
         loads = np.array([w.load for w in workers])
         return {
-            'mean': float(np.mean(loads)),
-            'std': float(np.std(loads)),
-            'min': float(np.min(loads)),
-            'max': float(np.max(loads)),
-            'p50': float(np.percentile(loads, 50)),
-            'p90': float(np.percentile(loads, 90)),
-            'p99': float(np.percentile(loads, 99)),
+            "mean": float(np.mean(loads)),
+            "std": float(np.std(loads)),
+            "min": float(np.min(loads)),
+            "max": float(np.max(loads)),
+            "p50": float(np.percentile(loads, 50)),
+            "p90": float(np.percentile(loads, 90)),
+            "p99": float(np.percentile(loads, 99)),
         }
 
     def find_cells_by_load(
-        self,
-        min_load: float = 0.0,
-        max_load: float = 1.0,
-        limit: int = 10
-    ) -> List['WorkerCell']:
+        self, min_load: float = 0.0, max_load: float = 1.0, limit: int = 10
+    ) -> list[WorkerCell]:
         workers = self._get_active_workers()
-        filtered = [
-            w for w in workers
-            if min_load <= w.load <= max_load
-        ]
+        filtered = [w for w in workers if min_load <= w.load <= max_load]
         filtered.sort(key=lambda w: w.load)
         return filtered[:limit]
 
-    def find_least_loaded_cells(self, count: int = 3) -> List['WorkerCell']:
+    def find_least_loaded_cells(self, count: int = 3) -> list[WorkerCell]:
         return self.find_cells_by_load(max_load=1.0, limit=count)
 
-    def find_most_loaded_cells(self, count: int = 3) -> List['WorkerCell']:
+    def find_most_loaded_cells(self, count: int = 3) -> list[WorkerCell]:
         workers = self._get_active_workers()
         workers.sort(key=lambda w: -w.load)
         return workers[:count]
 
     def should_rebalance(self) -> bool:
         stats = self.get_load_statistics()
-        return stats['std'] > self._rebalance_threshold
+        return stats["std"] > self._rebalance_threshold
 
-    def plan_rebalance(self) -> List[Tuple['WorkerCell', 'WorkerCell', int]]:
+    def plan_rebalance(self) -> list[tuple[WorkerCell, WorkerCell, int]]:
         if not self.should_rebalance():
             return []
 
         moves = []
-        overloaded = self.find_cells_by_load(
-            min_load=self._config.steal_threshold_high
-        )
-        underloaded = self.find_cells_by_load(
-            max_load=self._config.steal_threshold_low
-        )
+        overloaded = self.find_cells_by_load(min_load=self._config.steal_threshold_high)
+        underloaded = self.find_cells_by_load(max_load=self._config.steal_threshold_low)
 
         for source in overloaded:
             for target in underloaded:
@@ -2049,44 +2079,34 @@ class QueenCell(HoneycombCell):
 
         return moves
 
-    def issue_royal_command(self, command: str, params: Dict) -> int:
+    def issue_royal_command(self, command: str, params: dict) -> int:
         workers = self._get_active_workers()
         for worker in workers:
             worker._metadata["royal_command"] = {
                 "command": command,
                 "params": params,
                 "from_queen": self.coord.to_dict(),
-                "timestamp": time.time()
+                "timestamp": time.time(),
             }
         return len(workers)
 
-    def schedule_spawn(
-        self,
-        entity_type: str,
-        params: Dict,
-        priority: int = 0
-    ) -> str:
+    def schedule_spawn(self, entity_type: str, params: dict, priority: int = 0) -> str:
         """
         v3.0 FIX: Usa (priority, spawn_id, spec) donde spawn_id es str
         comparable, evitando comparación de dicts en heapq.
         """
         spawn_id = f"spawn_{uuid.uuid4().hex[:8]}"
-        spec = {
-            "id": spawn_id,
-            "type": entity_type,
-            "params": params,
-            "scheduled_at": time.time()
-        }
+        spec = {"id": spawn_id, "type": entity_type, "params": params, "scheduled_at": time.time()}
         heapq.heappush(self._spawn_queue, (-priority, spawn_id, spec))
         return spawn_id
 
-    def get_next_spawn(self) -> Optional[Dict]:
+    def get_next_spawn(self) -> dict | None:
         if self._spawn_queue:
             _, _, spec = heapq.heappop(self._spawn_queue)
             return spec
         return None
 
-    def add_succession_candidate(self, cell: 'QueenCell') -> None:
+    def add_succession_candidate(self, cell: QueenCell) -> None:
         self._succession_candidates.append(weakref.ref(cell))
 
     def get_cluster_health_score(self) -> float:
@@ -2099,32 +2119,31 @@ class QueenCell(HoneycombCell):
 
         loads = [w.load for w in workers]
         failed = sum(1 for w in workers if w.state == CellState.FAILED)
-        circuit_open = sum(
-            1 for w in workers
-            if w.circuit_breaker.state != CircuitState.CLOSED
-        )
+        circuit_open = sum(1 for w in workers if w.circuit_breaker.state != CircuitState.CLOSED)
 
         load_score = 1.0 - float(np.mean(loads))
         health_ratio = 1.0 - (failed + circuit_open) / len(workers)
         balance_score = 1.0 - min(1.0, float(np.std(loads)) * 2)
 
         cfg = self._config
-        return (load_score * cfg.cluster_health_load_weight
-                + health_ratio * cfg.cluster_health_health_weight
-                + balance_score * cfg.cluster_health_balance_weight)
+        return (
+            load_score * cfg.cluster_health_load_weight
+            + health_ratio * cfg.cluster_health_health_weight
+            + balance_score * cfg.cluster_health_balance_weight
+        )
 
-    def get_cluster_metrics(self) -> Dict[str, Any]:
+    def get_cluster_metrics(self) -> dict[str, Any]:
         workers = self._get_active_workers()
 
         return {
-            'queen_coord': self.coord.to_dict(),
-            'worker_count': len(workers),
-            'global_load': self._global_load,
-            'load_stats': self.get_load_statistics(),
-            'spawn_queue_size': len(self._spawn_queue),
-            'succession_candidates': len(self._succession_candidates),
-            'load_trend': list(self._load_history)[-10:] if self._load_history else [],
-            'health_score': self.get_cluster_health_score(),
+            "queen_coord": self.coord.to_dict(),
+            "worker_count": len(workers),
+            "global_load": self._global_load,
+            "load_stats": self.get_load_statistics(),
+            "spawn_queue_size": len(self._spawn_queue),
+            "succession_candidates": len(self._succession_candidates),
+            "load_trend": list(self._load_history)[-10:] if self._load_history else [],
+            "health_score": self.get_cluster_health_score(),
         }
 
 
@@ -2135,9 +2154,9 @@ class WorkerCell(HoneycombCell):
     v3.0: steal_from con _update_load dentro del lock scope.
     """
 
-    __slots__ = ('_processed_ticks', '_steal_count', '_stolen_from_count', '_work_history')
+    __slots__ = ("_processed_ticks", "_steal_count", "_stolen_from_count", "_work_history")
 
-    def __init__(self, coord: HexCoord, config: Optional[HoneycombConfig] = None):
+    def __init__(self, coord: HexCoord, config: HoneycombConfig | None = None):
         super().__init__(coord, CellRole.WORKER, config)
         self._processed_ticks: int = 0
         self._steal_count: int = 0
@@ -2145,15 +2164,15 @@ class WorkerCell(HoneycombCell):
         self._work_history: deque = deque(maxlen=100)
 
     def can_steal_work(self) -> bool:
-        return (
-            self._load < self._config.steal_threshold_low
-            and self._state in (CellState.IDLE, CellState.EMPTY)
+        return self._load < self._config.steal_threshold_low and self._state in (
+            CellState.IDLE,
+            CellState.EMPTY,
         )
 
     def should_donate_work(self) -> bool:
         return self._load > self._config.steal_threshold_high
 
-    def steal_from(self, source: 'WorkerCell', count: int = 1) -> int:
+    def steal_from(self, source: WorkerCell, count: int = 1) -> int:
         """
         Roba trabajo de otra celda.
 
@@ -2165,33 +2184,31 @@ class WorkerCell(HoneycombCell):
 
         stolen = 0
 
-        with cells[0]._rw_lock.write_lock():
-            with cells[1]._rw_lock.write_lock():
-                while (
-                    stolen < count
-                    and source._vcores
-                    and len(self._vcores) < self._config.vcores_per_cell
-                ):
-                    vcore = source._vcores.pop()
-                    self._vcores.append(vcore)
-                    stolen += 1
+        with cells[0]._rw_lock.write_lock(), cells[1]._rw_lock.write_lock():
+            while (
+                stolen < count
+                and source._vcores
+                and len(self._vcores) < self._config.vcores_per_cell
+            ):
+                vcore = source._vcores.pop()
+                self._vcores.append(vcore)
+                stolen += 1
 
-                if stolen > 0:
-                    # v3.0 FIX: actualizar loads DENTRO del lock
-                    source._load = len(source._vcores) / max(1, source._config.vcores_per_cell)
-                    self._load = len(self._vcores) / max(1, self._config.vcores_per_cell)
-                    self._steal_count += stolen
-                    source._stolen_from_count += stolen
+            if stolen > 0:
+                # v3.0 FIX: actualizar loads DENTRO del lock
+                source._load = len(source._vcores) / max(1, source._config.vcores_per_cell)
+                self._load = len(self._vcores) / max(1, self._config.vcores_per_cell)
+                self._steal_count += stolen
+                source._stolen_from_count += stolen
 
         if stolen > 0:
-            self._event_bus.publish(Event(
-                type=EventType.WORK_STOLEN,
-                source=self,
-                data={
-                    'from': source.coord.to_dict(),
-                    'count': stolen
-                }
-            ))
+            self._event_bus.publish(
+                Event(
+                    type=EventType.WORK_STOLEN,
+                    source=self,
+                    data={"from": source.coord.to_dict(), "count": stolen},
+                )
+            )
 
         return stolen
 
@@ -2220,29 +2237,26 @@ class WorkerCell(HoneycombCell):
         return total_stolen
 
     def record_work(self, work_id: str, duration: float, success: bool) -> None:
-        self._work_history.append({
-            'id': work_id,
-            'duration': duration,
-            'success': success,
-            'timestamp': time.time()
-        })
+        self._work_history.append(
+            {"id": work_id, "duration": duration, "success": success, "timestamp": time.time()}
+        )
 
-    def get_performance_stats(self) -> Dict[str, float]:
+    def get_performance_stats(self) -> dict[str, float]:
         if not self._work_history:
-            return {'avg_duration': 0, 'success_rate': 0, 'throughput': 0}
+            return {"avg_duration": 0, "success_rate": 0, "throughput": 0}
 
         history = list(self._work_history)
-        durations = [w['duration'] for w in history]
-        successes = sum(1 for w in history if w['success'])
+        durations = [w["duration"] for w in history]
+        successes = sum(1 for w in history if w["success"])
 
-        time_span = history[-1]['timestamp'] - history[0]['timestamp'] if len(history) > 1 else 1
+        time_span = history[-1]["timestamp"] - history[0]["timestamp"] if len(history) > 1 else 1
 
         return {
-            'avg_duration': float(np.mean(durations)),
-            'success_rate': successes / len(history),
-            'throughput': len(history) / max(time_span, 1),
-            'steal_count': self._steal_count,
-            'stolen_from_count': self._stolen_from_count
+            "avg_duration": float(np.mean(durations)),
+            "success_rate": successes / len(history),
+            "throughput": len(history) / max(time_span, 1),
+            "steal_count": self._steal_count,
+            "stolen_from_count": self._stolen_from_count,
         }
 
 
@@ -2255,14 +2269,17 @@ class DroneCell(HoneycombCell):
     """
 
     __slots__ = (
-        '_external_connections', '_message_queue',
-        '_messages_sent', '_messages_received', '_connection_errors'
+        "_connection_errors",
+        "_external_connections",
+        "_message_queue",
+        "_messages_received",
+        "_messages_sent",
     )
 
-    def __init__(self, coord: HexCoord, config: Optional[HoneycombConfig] = None):
+    def __init__(self, coord: HexCoord, config: HoneycombConfig | None = None):
         super().__init__(coord, CellRole.DRONE, config)
-        self._external_connections: List[Any] = []
-        self._message_queue: List[Tuple[int, str, Dict]] = []  # v3.0 FIX
+        self._external_connections: list[Any] = []
+        self._message_queue: list[tuple[int, str, dict]] = []  # v3.0 FIX
         self._messages_sent: int = 0
         self._messages_received: int = 0
         self._connection_errors: int = 0
@@ -2282,12 +2299,12 @@ class DroneCell(HoneycombCell):
             except ValueError:
                 return False
 
-    def queue_message(self, message: Dict, priority: int = 0) -> None:
+    def queue_message(self, message: dict, priority: int = 0) -> None:
         """v3.0 FIX: Usa msg_id para hacer tupla comparable."""
         msg_id = uuid.uuid4().hex[:8]
         heapq.heappush(self._message_queue, (-priority, msg_id, message))
 
-    def broadcast(self, message: Dict) -> int:
+    def broadcast(self, message: dict) -> int:
         sent = 0
 
         with self._rw_lock.read_lock():
@@ -2295,7 +2312,7 @@ class DroneCell(HoneycombCell):
 
         for endpoint in endpoints:
             try:
-                if hasattr(endpoint, 'receive'):
+                if hasattr(endpoint, "receive"):
                     endpoint.receive(message)
                     sent += 1
             except Exception as e:
@@ -2315,74 +2332,76 @@ class DroneCell(HoneycombCell):
 
         return processed
 
-    def get_comm_stats(self) -> Dict[str, Any]:
+    def get_comm_stats(self) -> dict[str, Any]:
         return {
-            'connections': len(self._external_connections),
-            'queue_size': len(self._message_queue),
-            'sent': self._messages_sent,
-            'received': self._messages_received,
-            'errors': self._connection_errors
+            "connections": len(self._external_connections),
+            "queue_size": len(self._message_queue),
+            "sent": self._messages_sent,
+            "received": self._messages_received,
+            "errors": self._connection_errors,
         }
 
 
 class NurseryCell(HoneycombCell):
     """Celda Guardería - Spawning de nuevas entidades (v3.0)."""
 
-    __slots__ = ('_incubating', '_ready_entities', '_total_spawned', '_max_incubating')
+    __slots__ = ("_incubating", "_max_incubating", "_ready_entities", "_total_spawned")
 
-    def __init__(self, coord: HexCoord, config: Optional[HoneycombConfig] = None):
+    def __init__(self, coord: HexCoord, config: HoneycombConfig | None = None):
         super().__init__(coord, CellRole.NURSERY, config)
-        self._incubating: List[Dict] = []
-        self._ready_entities: List[Any] = []
+        self._incubating: list[dict] = []
+        self._ready_entities: list[Any] = []
         self._total_spawned: int = 0
         self._max_incubating = 10
 
-    def incubate(self, entity_spec: Dict, priority: int = 0) -> Optional[str]:
+    def incubate(self, entity_spec: dict, priority: int = 0) -> str | None:
         with self._rw_lock.write_lock():
             if len(self._incubating) >= self._max_incubating:
                 return None
 
             entity_id = f"entity_{uuid.uuid4().hex[:8]}"
-            self._incubating.append({
-                "id": entity_id,
-                "spec": entity_spec,
-                "progress": 0.0,
-                "priority": priority,
-                "started_at": time.time()
-            })
+            self._incubating.append(
+                {
+                    "id": entity_id,
+                    "spec": entity_spec,
+                    "progress": 0.0,
+                    "priority": priority,
+                    "started_at": time.time(),
+                }
+            )
 
-            self._incubating.sort(key=lambda x: -x['priority'])
+            self._incubating.sort(key=lambda x: -x["priority"])
 
-            self._event_bus.publish(Event(
-                type=EventType.ENTITY_INCUBATING,
-                source=self,
-                data={'entity_id': entity_id}
-            ))
+            self._event_bus.publish(
+                Event(type=EventType.ENTITY_INCUBATING, source=self, data={"entity_id": entity_id})
+            )
 
             return entity_id
 
-    def tick_incubation(self, rate: Optional[float] = None) -> List[Any]:
+    def tick_incubation(self, rate: float | None = None) -> list[Any]:
         rate = rate if rate is not None else self._config.nursery_default_incubation_rate
         ready = []
         still_incubating = []
 
         with self._rw_lock.write_lock():
             for item in self._incubating:
-                progress_increment = rate * (1 + item['progress'])
+                progress_increment = rate * (1 + item["progress"])
                 item["progress"] = min(1.0, item["progress"] + progress_increment)
 
                 if item["progress"] >= 1.0:
                     entity = self._create_entity(item["spec"])
-                    entity['id'] = item['id']
-                    entity['incubation_time'] = time.time() - item['started_at']
+                    entity["id"] = item["id"]
+                    entity["incubation_time"] = time.time() - item["started_at"]
                     ready.append(entity)
                     self._total_spawned += 1
 
-                    self._event_bus.publish(Event(
-                        type=EventType.ENTITY_SPAWNED,
-                        source=self,
-                        data={'entity_id': item['id']}
-                    ))
+                    self._event_bus.publish(
+                        Event(
+                            type=EventType.ENTITY_SPAWNED,
+                            source=self,
+                            data={"entity_id": item["id"]},
+                        )
+                    )
                 else:
                     still_incubating.append(item)
 
@@ -2391,15 +2410,15 @@ class NurseryCell(HoneycombCell):
 
         return ready
 
-    def _create_entity(self, spec: Dict) -> Dict:
+    def _create_entity(self, spec: dict) -> dict:
         return {
             "type": spec.get("type", "unknown"),
             "created": True,
             "spec": spec,
-            "born_at": time.time()
+            "born_at": time.time(),
         }
 
-    def harvest_ready(self, count: Optional[int] = None) -> List[Any]:
+    def harvest_ready(self, count: int | None = None) -> list[Any]:
         with self._rw_lock.write_lock():
             if count is None:
                 ready = self._ready_entities
@@ -2409,24 +2428,24 @@ class NurseryCell(HoneycombCell):
                 self._ready_entities = self._ready_entities[count:]
             return ready
 
-    def get_incubation_status(self) -> List[Dict]:
+    def get_incubation_status(self) -> list[dict]:
         with self._rw_lock.read_lock():
             return [
                 {
-                    'id': item['id'],
-                    'progress': item['progress'],
-                    'priority': item['priority'],
-                    'elapsed': time.time() - item['started_at']
+                    "id": item["id"],
+                    "progress": item["progress"],
+                    "priority": item["priority"],
+                    "elapsed": time.time() - item["started_at"],
                 }
                 for item in self._incubating
             ]
 
-    def get_nursery_stats(self) -> Dict[str, Any]:
+    def get_nursery_stats(self) -> dict[str, Any]:
         return {
-            'incubating': len(self._incubating),
-            'ready': len(self._ready_entities),
-            'total_spawned': self._total_spawned,
-            'capacity': self._max_incubating
+            "incubating": len(self._incubating),
+            "ready": len(self._ready_entities),
+            "total_spawned": self._total_spawned,
+            "capacity": self._max_incubating,
         }
 
 
@@ -2437,22 +2456,17 @@ class StorageCell(HoneycombCell):
     v3.0: LRU eviction cuando se llega a capacidad máxima.
     """
 
-    __slots__ = ('_storage', '_storage_lock', '_max_size', '_current_size', '_access_order')
+    __slots__ = ("_access_order", "_current_size", "_max_size", "_storage", "_storage_lock")
 
-    def __init__(self, coord: HexCoord, config: Optional[HoneycombConfig] = None):
+    def __init__(self, coord: HexCoord, config: HoneycombConfig | None = None):
         super().__init__(coord, CellRole.STORAGE, config)
-        self._storage: Dict[str, Tuple[Any, float, Optional[float]]] = {}
+        self._storage: dict[str, tuple[Any, float, float | None]] = {}
         self._storage_lock = threading.Lock()
         self._max_size = 1000
         self._current_size = 0
         self._access_order: OrderedDict = OrderedDict()  # v3.0: LRU tracking
 
-    def store(
-        self,
-        key: str,
-        value: Any,
-        ttl: Optional[float] = None
-    ) -> bool:
+    def store(self, key: str, value: Any, ttl: float | None = None) -> bool:
         """Almacena un valor con TTL opcional. LRU eviction si está lleno."""
         with self._storage_lock:
             # v3.0: LRU eviction
@@ -2469,7 +2483,7 @@ class StorageCell(HoneycombCell):
             self._access_order[key] = True
             return True
 
-    def retrieve(self, key: str) -> Optional[Any]:
+    def retrieve(self, key: str) -> Any | None:
         with self._storage_lock:
             if key not in self._storage:
                 return None
@@ -2520,11 +2534,11 @@ class StorageCell(HoneycombCell):
 
         return len(expired)
 
-    def get_storage_stats(self) -> Dict[str, Any]:
+    def get_storage_stats(self) -> dict[str, Any]:
         return {
-            'keys': self._current_size,
-            'capacity': self._max_size,
-            'utilization': self._current_size / self._max_size if self._max_size > 0 else 0
+            "keys": self._current_size,
+            "capacity": self._max_size,
+            "utilization": self._current_size / self._max_size if self._max_size > 0 else 0,
         }
 
 
@@ -2536,20 +2550,17 @@ class GuardCell(HoneycombCell):
     y emite alertas. Protege un perímetro de celdas vecinas.
     """
 
-    __slots__ = (
-        '_rules', '_violations', '_blocked_sources',
-        '_total_checks', '_total_blocks'
-    )
+    __slots__ = ("_blocked_sources", "_rules", "_total_blocks", "_total_checks", "_violations")
 
-    def __init__(self, coord: HexCoord, config: Optional[HoneycombConfig] = None):
+    def __init__(self, coord: HexCoord, config: HoneycombConfig | None = None):
         super().__init__(coord, CellRole.GUARD, config)
-        self._rules: List[Callable[[Dict], bool]] = []
+        self._rules: list[Callable[[dict], bool]] = []
         self._violations: deque = deque(maxlen=500)
-        self._blocked_sources: Set[HexCoord] = set()
+        self._blocked_sources: set[HexCoord] = set()
         self._total_checks: int = 0
         self._total_blocks: int = 0
 
-    def add_rule(self, rule: Callable[[Dict], bool]) -> int:
+    def add_rule(self, rule: Callable[[dict], bool]) -> int:
         """
         Añade una regla de validación.
         rule(data) retorna True si pasa, False si viola.
@@ -2563,7 +2574,7 @@ class GuardCell(HoneycombCell):
             return True
         return False
 
-    def validate(self, data: Dict, source: Optional[HexCoord] = None) -> bool:
+    def validate(self, data: dict, source: HexCoord | None = None) -> bool:
         """Valida datos contra todas las reglas."""
         self._total_checks += 1
 
@@ -2574,21 +2585,25 @@ class GuardCell(HoneycombCell):
         for i, rule in enumerate(self._rules):
             try:
                 if not rule(data):
-                    self._violations.append({
-                        'rule_index': i,
-                        'source': source.to_dict() if source else None,
-                        'timestamp': time.time(),
-                        'data_keys': list(data.keys()),
-                    })
-
-                    self._event_bus.publish(Event(
-                        type=EventType.GUARD_VALIDATION_FAILED,
-                        source=self,
-                        data={
-                            'rule_index': i,
-                            'source_coord': source.to_dict() if source else None
+                    self._violations.append(
+                        {
+                            "rule_index": i,
+                            "source": source.to_dict() if source else None,
+                            "timestamp": time.time(),
+                            "data_keys": list(data.keys()),
                         }
-                    ))
+                    )
+
+                    self._event_bus.publish(
+                        Event(
+                            type=EventType.GUARD_VALIDATION_FAILED,
+                            source=self,
+                            data={
+                                "rule_index": i,
+                                "source_coord": source.to_dict() if source else None,
+                            },
+                        )
+                    )
 
                     self._total_blocks += 1
                     return False
@@ -2604,16 +2619,14 @@ class GuardCell(HoneycombCell):
     def unblock_source(self, coord: HexCoord) -> None:
         self._blocked_sources.discard(coord)
 
-    def get_guard_stats(self) -> Dict[str, Any]:
+    def get_guard_stats(self) -> dict[str, Any]:
         return {
-            'rules': len(self._rules),
-            'total_checks': self._total_checks,
-            'total_blocks': self._total_blocks,
-            'blocked_sources': len(self._blocked_sources),
-            'recent_violations': len(self._violations),
-            'block_rate': (
-                self._total_blocks / max(1, self._total_checks)
-            ),
+            "rules": len(self._rules),
+            "total_checks": self._total_checks,
+            "total_blocks": self._total_blocks,
+            "blocked_sources": len(self._blocked_sources),
+            "recent_violations": len(self._violations),
+            "block_rate": (self._total_blocks / max(1, self._total_checks)),
         }
 
 
@@ -2627,19 +2640,22 @@ class ScoutCell(HoneycombCell):
     """
 
     __slots__ = (
-        '_exploration_history', '_discoveries', '_current_target',
-        '_max_exploration_range', '_visit_memory'
+        "_current_target",
+        "_discoveries",
+        "_exploration_history",
+        "_max_exploration_range",
+        "_visit_memory",
     )
 
-    def __init__(self, coord: HexCoord, config: Optional[HoneycombConfig] = None):
+    def __init__(self, coord: HexCoord, config: HoneycombConfig | None = None):
         super().__init__(coord, CellRole.SCOUT, config)
         self._exploration_history: deque = deque(maxlen=200)
-        self._discoveries: List[Dict] = []
-        self._current_target: Optional[HexCoord] = None
+        self._discoveries: list[dict] = []
+        self._current_target: HexCoord | None = None
         self._max_exploration_range = config.radius if config else 10
-        self._visit_memory: Set[HexCoord] = set()
+        self._visit_memory: set[HexCoord] = set()
 
-    def explore_step(self) -> Optional[Dict]:
+    def explore_step(self) -> dict | None:
         """
         Ejecuta un paso de exploración.
         Elige la dirección menos visitada con sesgo por feromonas de exploración.
@@ -2658,50 +2674,59 @@ class ScoutCell(HoneycombCell):
             explore_pheromone = n.get_pheromone(PheromoneType.EXPLORATION)
             load_score = 1.0 - n.load
             novelty = self._config.scout_novelty_bonus if n.coord not in self._visit_memory else 0.0
-            scored.append((load_score + explore_pheromone * self._config.scout_explore_pheromone_weight + novelty, n))
+            scored.append(
+                (
+                    load_score
+                    + explore_pheromone * self._config.scout_explore_pheromone_weight
+                    + novelty,
+                    n,
+                )
+            )
 
         scored.sort(key=lambda x: -x[0])
         best = scored[0][1]
 
         self._visit_memory.add(best.coord)
-        self._exploration_history.append({
-            'coord': best.coord.to_dict(),
-            'timestamp': time.time(),
-            'load': best.load,
-        })
+        self._exploration_history.append(
+            {
+                "coord": best.coord.to_dict(),
+                "timestamp": time.time(),
+                "load": best.load,
+            }
+        )
 
         # Depositar feromona de camino
-        self.deposit_pheromone(PheromoneType.PATH, self._config.scout_path_deposit_intensity, source=self.coord)
+        self.deposit_pheromone(
+            PheromoneType.PATH, self._config.scout_path_deposit_intensity, source=self.coord
+        )
 
         # Detectar descubrimientos
         discovery = None
         if best.load < self._config.scout_low_load_threshold and best.is_available:
             discovery = {
-                'type': 'low_load_area',
-                'coord': best.coord.to_dict(),
-                'load': best.load,
-                'timestamp': time.time(),
+                "type": "low_load_area",
+                "coord": best.coord.to_dict(),
+                "load": best.load,
+                "timestamp": time.time(),
             }
             self._discoveries.append(discovery)
 
-            self._event_bus.publish(Event(
-                type=EventType.SCOUT_DISCOVERY,
-                source=self,
-                data=discovery
-            ))
+            self._event_bus.publish(
+                Event(type=EventType.SCOUT_DISCOVERY, source=self, data=discovery)
+            )
 
         return discovery
 
     def set_target(self, target: HexCoord) -> None:
         self._current_target = target
 
-    def get_scout_stats(self) -> Dict[str, Any]:
+    def get_scout_stats(self) -> dict[str, Any]:
         return {
-            'explored_cells': len(self._visit_memory),
-            'discoveries': len(self._discoveries),
-            'history_length': len(self._exploration_history),
-            'current_target': self._current_target.to_dict() if self._current_target else None,
-            'max_range': self._max_exploration_range,
+            "explored_cells": len(self._visit_memory),
+            "discoveries": len(self._discoveries),
+            "history_length": len(self._exploration_history),
+            "current_target": self._current_target.to_dict() if self._current_target else None,
+            "max_range": self._max_exploration_range,
         }
 
 
@@ -2709,8 +2734,10 @@ class ScoutCell(HoneycombCell):
 # HEALTH MONITOR (v3.0 - nuevo)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class HealthStatus(Enum):
     """Estado de salud del sistema."""
+
     HEALTHY = auto()
     DEGRADED = auto()
     CRITICAL = auto()
@@ -2719,23 +2746,27 @@ class HealthStatus(Enum):
 class HealthMonitor:
     """
     Monitor de salud del grid con alertas automáticas.
-    
+
     Evalúa: carga promedio, celdas fallidas, circuit breakers abiertos,
     y tendencia de carga.
     """
 
     __slots__ = (
-        '_grid', '_event_bus', '_check_interval',
-        '_alert_threshold', '_last_check', '_status_history',
-        '_lock'
+        "_alert_threshold",
+        "_check_interval",
+        "_event_bus",
+        "_grid",
+        "_last_check",
+        "_lock",
+        "_status_history",
     )
 
     def __init__(
         self,
-        grid: 'HoneycombGrid',
-        event_bus: Optional[EventBus] = None,
+        grid: HoneycombGrid,
+        event_bus: EventBus | None = None,
         check_interval: float = 10.0,
-        alert_threshold: float = 0.9
+        alert_threshold: float = 0.9,
     ):
         self._grid = grid
         self._event_bus = event_bus or get_event_bus()
@@ -2745,57 +2776,55 @@ class HealthMonitor:
         self._status_history: deque = deque(maxlen=100)
         self._lock = threading.Lock()
 
-    def check_health(self) -> Dict[str, Any]:
+    def check_health(self) -> dict[str, Any]:
         """Ejecuta health check completo."""
         now = time.time()
 
         with self._lock:
             stats = self._grid.get_stats()
 
-            total = max(1, stats['total_cells'])
-            failed_ratio = stats['failed_cells'] / total
-            avg_load = stats['average_load']
+            total = max(1, stats["total_cells"])
+            failed_ratio = stats["failed_cells"] / total
+            avg_load = stats["average_load"]
 
             grid_config = self._grid.config
-            if failed_ratio > grid_config.health_critical_failed_ratio or avg_load > grid_config.health_critical_load:
+            if (
+                failed_ratio > grid_config.health_critical_failed_ratio
+                or avg_load > grid_config.health_critical_load
+            ):
                 status = HealthStatus.CRITICAL
-            elif failed_ratio > grid_config.health_degraded_failed_ratio or avg_load > self._alert_threshold:
+            elif (
+                failed_ratio > grid_config.health_degraded_failed_ratio
+                or avg_load > self._alert_threshold
+            ):
                 status = HealthStatus.DEGRADED
             else:
                 status = HealthStatus.HEALTHY
 
             result = {
-                'status': status.name,
-                'timestamp': now,
-                'average_load': avg_load,
-                'failed_cells': stats['failed_cells'],
-                'failed_ratio': failed_ratio,
-                'total_cells': total,
+                "status": status.name,
+                "timestamp": now,
+                "average_load": avg_load,
+                "failed_cells": stats["failed_cells"],
+                "failed_ratio": failed_ratio,
+                "total_cells": total,
             }
 
             self._status_history.append(result)
             self._last_check = now
 
         # Emitir eventos
-        self._event_bus.publish(Event(
-            type=EventType.HEALTH_CHECK,
-            source=self,
-            data=result
-        ))
+        self._event_bus.publish(Event(type=EventType.HEALTH_CHECK, source=self, data=result))
 
         if status != HealthStatus.HEALTHY:
-            self._event_bus.publish(Event(
-                type=EventType.HEALTH_ALERT,
-                source=self,
-                data=result
-            ))
+            self._event_bus.publish(Event(type=EventType.HEALTH_ALERT, source=self, data=result))
 
         return result
 
     def should_check(self) -> bool:
         return time.time() - self._last_check >= self._check_interval
 
-    def get_status_trend(self, window: int = 10) -> List[Dict]:
+    def get_status_trend(self, window: int = 10) -> list[dict]:
         return list(self._status_history)[-window:]
 
 
@@ -2804,7 +2833,7 @@ class HealthMonitor:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # Mapping de roles a clases de celdas
-_CELL_TYPE_MAP: Dict[CellRole, type] = {
+_CELL_TYPE_MAP: dict[CellRole, type] = {
     CellRole.QUEEN: QueenCell,
     CellRole.WORKER: WorkerCell,
     CellRole.DRONE: DroneCell,
@@ -2814,15 +2843,11 @@ _CELL_TYPE_MAP: Dict[CellRole, type] = {
     CellRole.SCOUT: ScoutCell,
 }
 
-_CELL_NAME_MAP: Dict[str, type] = {
-    cls.__name__: cls for cls in _CELL_TYPE_MAP.values()
-}
+_CELL_NAME_MAP: dict[str, type] = {cls.__name__: cls for cls in _CELL_TYPE_MAP.values()}
 
 
 def _create_cell_by_role(
-    role: CellRole,
-    coord: HexCoord,
-    config: Optional[HoneycombConfig] = None
+    role: CellRole, coord: HexCoord, config: HoneycombConfig | None = None
 ) -> HoneycombCell:
     """Factory para crear celdas por rol."""
     cell_cls = _CELL_TYPE_MAP.get(role, WorkerCell)
@@ -2834,6 +2859,7 @@ def _create_cell_by_role(
 # ═══════════════════════════════════════════════════════════════════════════════
 # GRID HEXAGONAL PRINCIPAL (v3.0)
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 class HoneycombGrid:
     """
@@ -2848,29 +2874,33 @@ class HoneycombGrid:
     """
 
     __slots__ = (
-        'config', '_cells', '_queen', '_rw_lock', '_topology',
-        '_executor', '_metrics_collector', '_event_bus',
-        '_tick_count', '_last_tick_time', '_running',
-        '_role_index', '_health_monitor'
+        "_cells",
+        "_event_bus",
+        "_executor",
+        "_health_monitor",
+        "_last_tick_time",
+        "_metrics_collector",
+        "_queen",
+        "_role_index",
+        "_running",
+        "_rw_lock",
+        "_tick_count",
+        "_topology",
+        "config",
     )
 
-    def __init__(
-        self,
-        config: Optional[HoneycombConfig] = None,
-        event_bus: Optional[EventBus] = None
-    ):
+    def __init__(self, config: HoneycombConfig | None = None, event_bus: EventBus | None = None):
         self.config = config or HoneycombConfig()
-        self._cells: Dict[HexCoord, HoneycombCell] = {}
-        self._queen: Optional[QueenCell] = None
+        self._cells: dict[HexCoord, HoneycombCell] = {}
+        self._queen: QueenCell | None = None
         self._rw_lock = RWLock()
         self._topology = GridTopology[self.config.topology.upper()]
         self._executor = ThreadPoolExecutor(
-            max_workers=self.config.max_parallel_rings,
-            thread_name_prefix="hoc_"
+            max_workers=self.config.max_parallel_rings, thread_name_prefix="hoc_"
         )
         self._metrics_collector = MetricsCollector(
             max_history=self.config.metrics_history_size,
-            sample_rate=self.config.metrics_sample_rate
+            sample_rate=self.config.metrics_sample_rate,
         )
         self._event_bus = event_bus or get_event_bus()
         self._tick_count = 0
@@ -2878,7 +2908,7 @@ class HoneycombGrid:
         self._running = False
 
         # v3.0: Índice por rol para lookups O(1)
-        self._role_index: Dict[CellRole, Set[HexCoord]] = defaultdict(set)
+        self._role_index: dict[CellRole, set[HexCoord]] = defaultdict(set)
 
         # Inicializar grid
         self._initialize_grid()
@@ -2888,7 +2918,7 @@ class HoneycombGrid:
             self,
             self._event_bus,
             check_interval=self.config.health_check_interval_s,
-            alert_threshold=self.config.health_alert_load_threshold
+            alert_threshold=self.config.health_alert_load_threshold,
         )
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -2934,7 +2964,7 @@ class HoneycombGrid:
         self._cells[coord] = cell
         self._role_index[cell.role].add(coord)
 
-    def _remove_cell_from_index(self, coord: HexCoord) -> Optional[HoneycombCell]:
+    def _remove_cell_from_index(self, coord: HexCoord) -> HoneycombCell | None:
         """Remueve celda del storage y del índice por rol."""
         cell = self._cells.pop(coord, None)
         if cell:
@@ -2948,11 +2978,7 @@ class HoneycombGrid:
                 neighbor = self._cells.get(neighbor_coord)
                 cell.set_neighbor(direction, neighbor)
 
-    def _resolve_neighbor_coord(
-        self,
-        coord: HexCoord,
-        direction: HexDirection
-    ) -> HexCoord:
+    def _resolve_neighbor_coord(self, coord: HexCoord, direction: HexDirection) -> HexCoord:
         """Resuelve coordenada del vecino considerando topología."""
         neighbor = coord.neighbor(direction)
 
@@ -2983,7 +3009,7 @@ class HoneycombGrid:
     # ─────────────────────────────────────────────────────────────────────────
 
     @property
-    def queen(self) -> Optional[QueenCell]:
+    def queen(self) -> QueenCell | None:
         return self._queen
 
     @property
@@ -3002,15 +3028,11 @@ class HoneycombGrid:
     # ACCESO A CELDAS
     # ─────────────────────────────────────────────────────────────────────────
 
-    def get_cell(self, coord: HexCoord) -> Optional[HoneycombCell]:
+    def get_cell(self, coord: HexCoord) -> HoneycombCell | None:
         with self._rw_lock.read_lock():
             return self._cells.get(coord)
 
-    def get_or_create_cell(
-        self,
-        coord: HexCoord,
-        cell_type: type = WorkerCell
-    ) -> HoneycombCell:
+    def get_or_create_cell(self, coord: HexCoord, cell_type: type = WorkerCell) -> HoneycombCell:
         with self._rw_lock.write_lock():
             if coord not in self._cells:
                 cell = cell_type(coord, self.config)
@@ -3020,11 +3042,11 @@ class HoneycombGrid:
                 if isinstance(cell, WorkerCell) and self._queen:
                     self._queen.register_worker(cell)
 
-                self._event_bus.publish(Event(
-                    type=EventType.GRID_CELL_ADDED,
-                    source=self,
-                    data={'coord': coord.to_dict()}
-                ))
+                self._event_bus.publish(
+                    Event(
+                        type=EventType.GRID_CELL_ADDED, source=self, data={"coord": coord.to_dict()}
+                    )
+                )
 
             return self._cells[coord]
 
@@ -3048,11 +3070,11 @@ class HoneycombGrid:
 
             self._remove_cell_from_index(coord)
 
-            self._event_bus.publish(Event(
-                type=EventType.GRID_CELL_REMOVED,
-                source=self,
-                data={'coord': coord.to_dict()}
-            ))
+            self._event_bus.publish(
+                Event(
+                    type=EventType.GRID_CELL_REMOVED, source=self, data={"coord": coord.to_dict()}
+                )
+            )
 
             return True
 
@@ -3068,24 +3090,16 @@ class HoneycombGrid:
     # CONSULTAS (v3.0: O(1) para consultas por rol)
     # ─────────────────────────────────────────────────────────────────────────
 
-    def get_ring(self, radius: int) -> List[HoneycombCell]:
+    def get_ring(self, radius: int) -> list[HoneycombCell]:
         origin = HexCoord.origin()
         with self._rw_lock.read_lock():
-            return [
-                self._cells[coord]
-                for coord in origin.ring(radius)
-                if coord in self._cells
-            ]
+            return [self._cells[coord] for coord in origin.ring(radius) if coord in self._cells]
 
-    def get_area(self, center: HexCoord, radius: int) -> List[HoneycombCell]:
+    def get_area(self, center: HexCoord, radius: int) -> list[HoneycombCell]:
         with self._rw_lock.read_lock():
-            return [
-                self._cells[coord]
-                for coord in center.spiral(radius)
-                if coord in self._cells
-            ]
+            return [self._cells[coord] for coord in center.spiral(radius) if coord in self._cells]
 
-    def get_cells_by_role(self, role: CellRole) -> List[HoneycombCell]:
+    def get_cells_by_role(self, role: CellRole) -> list[HoneycombCell]:
         """v3.0: O(k) donde k = celdas del rol, no O(n) total."""
         with self._rw_lock.read_lock():
             return [
@@ -3094,18 +3108,17 @@ class HoneycombGrid:
                 if coord in self._cells
             ]
 
-    def get_cells_by_state(self, state: CellState) -> List[HoneycombCell]:
+    def get_cells_by_state(self, state: CellState) -> list[HoneycombCell]:
         with self._rw_lock.read_lock():
             return [c for c in self._cells.values() if c.state == state]
 
     def find_available_cells(
-        self,
-        count: int = 1,
-        near: Optional[HexCoord] = None
-    ) -> List[HoneycombCell]:
+        self, count: int = 1, near: HexCoord | None = None
+    ) -> list[HoneycombCell]:
         with self._rw_lock.read_lock():
             available = [
-                cell for cell in self._cells.values()
+                cell
+                for cell in self._cells.values()
                 if cell.is_available and isinstance(cell, WorkerCell)
             ]
 
@@ -3117,15 +3130,12 @@ class HoneycombGrid:
             return available[:count]
 
     def find_path(
-        self,
-        start: HexCoord,
-        goal: HexCoord,
-        cost_fn: Optional[Callable[[HexCoord], float]] = None
-    ) -> Optional[List[HexCoord]]:
+        self, start: HexCoord, goal: HexCoord, cost_fn: Callable[[HexCoord], float] | None = None
+    ) -> list[HexCoord] | None:
         """v3.0: Soporta costos variables."""
         pathfinder = HexPathfinder(
             walkable_check=lambda c: c in self._cells and self._cells[c].is_available,
-            cost_fn=cost_fn
+            cost_fn=cost_fn,
         )
         return pathfinder.find_path(start, goal)
 
@@ -3134,10 +3144,8 @@ class HoneycombGrid:
     # ─────────────────────────────────────────────────────────────────────────
 
     def assign_vcore(
-        self,
-        vcore: Any,
-        preferred_coord: Optional[HexCoord] = None
-    ) -> Optional[HoneycombCell]:
+        self, vcore: Any, preferred_coord: HexCoord | None = None
+    ) -> HoneycombCell | None:
         cells = self.find_available_cells(3, near=preferred_coord)
 
         for cell in cells:
@@ -3146,11 +3154,8 @@ class HoneycombGrid:
 
         return None
 
-    def assign_vcores_batch(
-        self,
-        vcores: List[Any]
-    ) -> Dict[HexCoord, List[Any]]:
-        assignments: Dict[HexCoord, List[Any]] = defaultdict(list)
+    def assign_vcores_batch(self, vcores: list[Any]) -> dict[HexCoord, list[Any]]:
+        assignments: dict[HexCoord, list[Any]] = defaultdict(list)
 
         cells = self.find_available_cells(len(vcores) * 2)
         cell_idx = 0
@@ -3173,15 +3178,13 @@ class HoneycombGrid:
     # TICK Y PROCESAMIENTO
     # ─────────────────────────────────────────────────────────────────────────
 
-    def tick(self) -> Dict[str, Any]:
+    def tick(self) -> dict[str, Any]:
         """Ejecuta un tick global del grid."""
         tick_start = time.time()
 
-        self._event_bus.publish(Event(
-            type=EventType.GRID_TICK_START,
-            source=self,
-            data={'tick': self._tick_count}
-        ))
+        self._event_bus.publish(
+            Event(type=EventType.GRID_TICK_START, source=self, data={"tick": self._tick_count})
+        )
 
         results = {
             "tick": self._tick_count,
@@ -3217,10 +3220,7 @@ class HoneycombGrid:
         tps = 1.0 / tick_duration if tick_duration > 0 else 0
 
         with self._rw_lock.read_lock():
-            worker_loads = [
-                c.load for c in self._cells.values()
-                if isinstance(c, WorkerCell)
-            ]
+            worker_loads = [c.load for c in self._cells.values() if isinstance(c, WorkerCell)]
 
         metrics = GridMetrics(
             timestamp=time.time(),
@@ -3236,7 +3236,7 @@ class HoneycombGrid:
             total_pheromones=sum(c.pheromone_level for c in self._cells.values()),
             ticks_per_second=tps,
             errors_per_second=results["errors"] / tick_duration if tick_duration > 0 else 0,
-            work_steals=results["work_steals"]
+            work_steals=results["work_steals"],
         )
 
         self._metrics_collector.record(metrics)
@@ -3248,19 +3248,15 @@ class HoneycombGrid:
         if self._health_monitor.should_check():
             self._health_monitor.check_health()
 
-        self._event_bus.publish(Event(
-            type=EventType.GRID_TICK_END,
-            source=self,
-            data=results
-        ))
+        self._event_bus.publish(Event(type=EventType.GRID_TICK_END, source=self, data=results))
 
         return results
 
-    def _parallel_tick(self) -> Dict[str, int]:
+    def _parallel_tick(self) -> dict[str, int]:
         processed = 0
         errors = 0
 
-        futures: List[Future] = []
+        futures: list[Future] = []
 
         for ring_r in range(self.config.radius + 1):
             ring_cells = self.get_ring(ring_r)
@@ -3279,7 +3275,7 @@ class HoneycombGrid:
 
         return {"processed": processed, "errors": errors}
 
-    def _sequential_tick(self) -> Dict[str, int]:
+    def _sequential_tick(self) -> dict[str, int]:
         processed = 0
         errors = 0
 
@@ -3296,7 +3292,7 @@ class HoneycombGrid:
 
         return {"processed": processed, "errors": errors}
 
-    def _process_cells_batch(self, cells: List[HoneycombCell]) -> Dict[str, int]:
+    def _process_cells_batch(self, cells: list[HoneycombCell]) -> dict[str, int]:
         processed = 0
         errors = 0
 
@@ -3313,10 +3309,7 @@ class HoneycombGrid:
         total_stolen = 0
 
         with self._rw_lock.read_lock():
-            workers = [
-                c for c in self._cells.values()
-                if isinstance(c, WorkerCell)
-            ]
+            workers = [c for c in self._cells.values() if isinstance(c, WorkerCell)]
 
         for worker in workers:
             if worker.can_steal_work():
@@ -3324,7 +3317,7 @@ class HoneycombGrid:
                 total_stolen += stolen
 
         if total_stolen > 0:
-            self._metrics_collector.increment('work_steals', total_stolen)
+            self._metrics_collector.increment("work_steals", total_stolen)
 
         return total_stolen
 
@@ -3334,9 +3327,9 @@ class HoneycombGrid:
 
         with self._rw_lock.read_lock():
             failed = [
-                c for c in self._cells.values()
-                if c.state == CellState.FAILED
-                and c.circuit_breaker.state == CircuitState.HALF_OPEN
+                c
+                for c in self._cells.values()
+                if c.state == CellState.FAILED and c.circuit_breaker.state == CircuitState.HALF_OPEN
             ]
 
         for cell in failed:
@@ -3361,7 +3354,7 @@ class HoneycombGrid:
     # ESTADÍSTICAS Y MÉTRICAS
     # ─────────────────────────────────────────────────────────────────────────
 
-    def get_stats(self) -> Dict[str, Any]:
+    def get_stats(self) -> dict[str, Any]:
         with self._rw_lock.read_lock():
             workers = [c for c in self._cells.values() if isinstance(c, WorkerCell)]
             worker_loads = [w.load for w in workers]
@@ -3385,10 +3378,10 @@ class HoneycombGrid:
                 "topology": self._topology.name,
             }
 
-    def get_metrics_history(self, limit: int = 100) -> List[Dict[str, Any]]:
+    def get_metrics_history(self, limit: int = 100) -> list[dict[str, Any]]:
         return [m.to_dict() for m in self._metrics_collector.get_history(limit)]
 
-    def get_cell_metrics(self) -> List[Dict[str, Any]]:
+    def get_cell_metrics(self) -> list[dict[str, Any]]:
         with self._rw_lock.read_lock():
             return [c.get_metrics().to_dict() for c in self._cells.values()]
 
@@ -3406,8 +3399,7 @@ class HoneycombGrid:
             indent = " " * abs(r)
             row = []
 
-            for q in range(-self.config.radius - min(0, r),
-                          self.config.radius - max(0, r) + 1):
+            for q in range(-self.config.radius - min(0, r), self.config.radius - max(0, r) + 1):
                 coord = HexCoord(q, r)
 
                 if coord in self._cells:
@@ -3464,25 +3456,22 @@ class HoneycombGrid:
     # SERIALIZACIÓN (v3.0: from_dict completo)
     # ─────────────────────────────────────────────────────────────────────────
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         with self._rw_lock.read_lock():
             return {
                 "version": "3.0",
                 "config": self.config.to_dict(),
                 "topology": self._topology.name,
                 "tick_count": self._tick_count,
-                "cells": {
-                    f"{c.q},{c.r}": cell.to_dict()
-                    for c, cell in self._cells.items()
-                },
-                "stats": self.get_stats()
+                "cells": {f"{c.q},{c.r}": cell.to_dict() for c, cell in self._cells.items()},
+                "stats": self.get_stats(),
             }
 
     def to_json(self, indent: int = 2) -> str:
         return json.dumps(self.to_dict(), indent=indent, default=str)
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'HoneycombGrid':
+    def from_dict(cls, data: dict[str, Any]) -> HoneycombGrid:
         """
         v3.0: Deserialización completa con restauración de estado.
         """
@@ -3500,10 +3489,8 @@ class HoneycombGrid:
 
             if cell is not None:
                 state_name = cell_data.get("state", "EMPTY")
-                try:
+                with suppress(KeyError):
                     cell._state = CellState[state_name]
-                except KeyError:
-                    pass
 
                 cell._error_count = cell_data.get("errors", 0)
                 cell._ticks_processed = cell_data.get("ticks", 0)
@@ -3534,7 +3521,7 @@ class HoneycombGrid:
         self._event_bus.shutdown()
         logger.info("HoneycombGrid shutdown complete")
 
-    def __enter__(self) -> 'HoneycombGrid':
+    def __enter__(self) -> HoneycombGrid:
         self.start()
         return self
 
@@ -3553,17 +3540,14 @@ class HoneycombGrid:
 # FUNCIONES DE UTILIDAD
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def create_grid(
-    radius: int = 10,
-    topology: str = 'flat',
-    **kwargs
-) -> HoneycombGrid:
+
+def create_grid(radius: int = 10, topology: str = "flat", **kwargs) -> HoneycombGrid:
     """Factory function para crear grids."""
     config = HoneycombConfig(radius=radius, topology=topology, **kwargs)
     return HoneycombGrid(config)
 
 
-def benchmark_grid(grid: HoneycombGrid, ticks: int = 100) -> Dict[str, float]:
+def benchmark_grid(grid: HoneycombGrid, ticks: int = 100) -> dict[str, float]:
     """Ejecuta benchmark del grid."""
     times = []
 
@@ -3574,13 +3558,13 @@ def benchmark_grid(grid: HoneycombGrid, ticks: int = 100) -> Dict[str, float]:
         times.append(elapsed)
 
     return {
-        'total_time': sum(times),
-        'avg_tick_time': float(np.mean(times)),
-        'min_tick_time': min(times),
-        'max_tick_time': max(times),
-        'ticks_per_second': 1.0 / float(np.mean(times)) if np.mean(times) > 0 else 0,
-        'stddev': float(np.std(times)),
-        'p99_tick_time': float(np.percentile(times, 99)),
+        "total_time": sum(times),
+        "avg_tick_time": float(np.mean(times)),
+        "min_tick_time": min(times),
+        "max_tick_time": max(times),
+        "ticks_per_second": 1.0 / float(np.mean(times)) if np.mean(times) > 0 else 0,
+        "stddev": float(np.std(times)),
+        "p99_tick_time": float(np.percentile(times, 99)),
     }
 
 
@@ -3593,7 +3577,7 @@ if __name__ == "__main__":
 
     with create_grid(radius=5, parallel_ring_processing=True) as grid:
         print(f"Created: {grid}")
-        print(f"\nInitial stats:")
+        print("\nInitial stats:")
         for k, v in grid.get_stats().items():
             print(f"  {k}: {v}")
 
