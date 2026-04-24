@@ -155,7 +155,10 @@ exclude = [
     # Phase 3 legacy suppression — these files pre-date strict typing.
     # Future phases re-enable per-module by removing from exclude. See ADR-006.
     "^bridge\\.py$",
-    "^core\\.py$",
+    # core.py was split into the core/ subpackage in Phase 3.3 — the legacy
+    # suppression follows the code to its new home. Will be tightened
+    # per-submodule as those are annotated. See ADR-006.
+    "^core/",
     "^metrics\\.py$",
     "^nectar\\.py$",
     "^swarm\\.py$",
