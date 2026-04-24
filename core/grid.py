@@ -20,7 +20,6 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-from ._metrics_internal import GridMetrics, MetricsCollector
 from .cells import (
     CellRole,
     CellState,
@@ -122,6 +121,8 @@ class HoneycombGrid:
     )
 
     def __init__(self, config: HoneycombConfig | None = None, event_bus: EventBus | None = None):
+        from ..metrics.collection import MetricsCollector  # lazy: ciclo core↔metrics
+
         self.config = config or HoneycombConfig()
         self._cells: dict[HexCoord, HoneycombCell] = {}
         self._queen: QueenCell | None = None
@@ -445,7 +446,6 @@ class HoneycombGrid:
         # Feromonas
         self._update_pheromones()
 
-        # Métricas
         results["total_vcores"] = sum(c.vcore_count for c in self._cells.values())
 
         tick_duration = time.time() - tick_start
@@ -453,6 +453,7 @@ class HoneycombGrid:
 
         with self._rw_lock.read_lock():
             worker_loads = [c.load for c in self._cells.values() if isinstance(c, WorkerCell)]
+        from ..metrics.collection import GridMetrics  # lazy: ciclo core↔metrics
 
         metrics = GridMetrics(
             timestamp=time.time(),

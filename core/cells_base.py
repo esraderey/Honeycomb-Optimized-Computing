@@ -32,7 +32,7 @@ from .locking import RWLock
 from .pheromone import PheromoneField, PheromoneType
 
 if TYPE_CHECKING:
-    from ._metrics_internal import CellMetrics
+    from ..metrics.collection import _InternalCellMetrics as CellMetrics
 
 logger = logging.getLogger(__name__)
 
@@ -479,10 +479,10 @@ class HoneycombCell:
     # ─────────────────────────────────────────────────────────────────────────
 
     def get_metrics(self) -> CellMetrics:
-        # Lazy import rompe el ciclo: _metrics_internal.CellMetrics depende de
-        # CellRole/CellState (este módulo), pero esta celda necesita construir
-        # CellMetrics en runtime.
-        from ._metrics_internal import CellMetrics
+        # Lazy import rompe el ciclo: la CellMetrics interna vive en
+        # hoc.metrics.collection como ``_InternalCellMetrics`` y depende de
+        # CellRole/CellState (este módulo). Esta celda la construye en runtime.
+        from ..metrics.collection import _InternalCellMetrics as CellMetrics
 
         with self._rw_lock.read_lock():
             return CellMetrics(

@@ -64,15 +64,20 @@ API pública antigua se re-exportan desde aquí con identidad preservada
   hexagonal, configuración y ``HoneycombGrid``.
 - :mod:`.cells_base` / :mod:`.cells_specialized` / :mod:`.cells` —
   ``HoneycombCell`` y las 7 subclases especializadas.
-- :mod:`._metrics_internal` — ``CellMetrics``/``GridMetrics``/
-  ``MetricsCollector`` (home transitorio; se moverá a ``hoc.metrics``
-  en la Fase 3.4).
 - :mod:`.constants` — magic numbers extraídos (scaffolding).
+
+Clases transicionales ``CellMetrics`` / ``GridMetrics`` / ``MetricsCollector``
+viven en :mod:`hoc.metrics.collection` desde Fase 3.3 (cont.). Se re-exportan
+aquí de forma perezosa (``__getattr__``) para preservar la API pública
+``from hoc.core import CellMetrics, GridMetrics, MetricsCollector``. El alias
+``CellMetrics`` resuelve a ``_InternalCellMetrics`` (distinta identidad que
+la ``CellMetrics`` pública expuesta por :mod:`hoc.metrics`).
 """
 
 from __future__ import annotations
 
-from ._metrics_internal import CellMetrics, GridMetrics, MetricsCollector
+from typing import TYPE_CHECKING, Any
+
 from .cells import (
     CellRole,
     CellState,
@@ -110,6 +115,38 @@ from .grid_geometry import (
 from .health import CircuitBreaker, CircuitState, HealthMonitor, HealthStatus
 from .locking import RWLock
 from .pheromone import PheromoneDeposit, PheromoneField, PheromoneType
+
+if TYPE_CHECKING:
+    # Re-exportado perezosamente vía ``__getattr__`` (ver abajo). Importar
+    # ``hoc.metrics.collection`` al cargar este paquete crearía un ciclo
+    # (metrics → core → metrics). Los typecheckers usan los imports de esta
+    # rama; el runtime los resuelve bajo demanda.
+    from ..metrics.collection import (
+        GridMetrics,
+        MetricsCollector,
+        _InternalCellMetrics as CellMetrics,
+    )
+
+
+def __getattr__(name: str) -> Any:
+    # PEP 562: resuelve bajo demanda las tres clases transicionales que
+    # viven en ``hoc.metrics.collection`` para preservar la API pública
+    # ``from hoc.core import CellMetrics, GridMetrics, MetricsCollector``
+    # sin disparar el ciclo core ↔ metrics en tiempo de carga.
+    if name in ("CellMetrics", "GridMetrics", "MetricsCollector"):
+        from ..metrics.collection import (
+            GridMetrics,
+            MetricsCollector,
+            _InternalCellMetrics as CellMetrics,
+        )
+
+        return {
+            "CellMetrics": CellMetrics,
+            "GridMetrics": GridMetrics,
+            "MetricsCollector": MetricsCollector,
+        }[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     # Core types

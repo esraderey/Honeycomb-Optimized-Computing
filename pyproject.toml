@@ -159,7 +159,9 @@ exclude = [
     # suppression follows the code to its new home. Will be tightened
     # per-submodule as those are annotated. See ADR-006.
     "^core/",
-    "^metrics\\.py$",
+    # metrics.py was split into the metrics/ subpackage in Phase 3.3 (cont.)
+    # — the legacy suppression follows the code to its new home.
+    "^metrics/",
     "^nectar\\.py$",
     "^swarm\\.py$",
 ]
