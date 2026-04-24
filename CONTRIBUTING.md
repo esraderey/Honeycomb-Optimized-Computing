@@ -71,11 +71,11 @@ python -m ruff check .
 python -m black --check .
 
 # Types (strict on security/memory/resilience; legacy suppressed via
-# [tool.mypy].exclude — see ADR-006)
-# Uses an explicit file list to sidestep mypy's directory-name inference
-# (which rejects hyphens in the checkout dir like
-# "Honeycomb-Optimized-Computing" on CI).
-python -m mypy __init__.py security.py memory.py resilience.py
+# [tool.mypy].exclude — see ADR-006).
+# NOTE: your local checkout directory name must be a valid Python identifier
+# (e.g. `hoc`, `HOC`, `my_hoc` — no hyphens). See pyproject.toml comment
+# above the [tool.mypy] section for background.
+python -m mypy .
 
 # Security
 python -m bandit -r . -x ./tests,./benchmarks,./snapshot

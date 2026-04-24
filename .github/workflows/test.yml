@@ -15,6 +15,14 @@ jobs:
   test:
     name: pytest — ${{ matrix.os }} / Python ${{ matrix.python-version }}
     runs-on: ${{ matrix.os }}
+    # Check out into a directory named `hoc` (a valid Python package name).
+    # The default checkout path is the repo name "Honeycomb-Optimized-Computing"
+    # whose hyphens break pytest/mypy filesystem-based package inference,
+    # because pyproject declares `package-dir = {hoc = "."}` which makes the
+    # checkout dir itself act as the package root.
+    defaults:
+      run:
+        working-directory: hoc
     strategy:
       fail-fast: false
       matrix:
@@ -23,6 +31,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: hoc
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
@@ -49,7 +59,7 @@ jobs:
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
         uses: codecov/codecov-action@v4
         with:
-          file: ./coverage.xml
+          file: ./hoc/coverage.xml
           fail_ci_if_error: false
           verbose: false
         # Token optional for public repos. Uncomment + set CODECOV_TOKEN secret

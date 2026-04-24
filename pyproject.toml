@@ -156,13 +156,14 @@ follow_imports = "silent"
 # All dependencies we actually use (numpy, mscs) are listed in overrides with
 # ignore_missing_imports, so this doesn't regress type quality for HOC itself.
 no_site_packages = true
-# NOTE: Invoke mypy with explicit file list
-# (`python -m mypy __init__.py security.py memory.py resilience.py`) rather
-# than `python -m mypy .`. The directory-mode tries to infer the package
-# name from the cwd, which breaks when the checkout dir has hyphens
-# (e.g. CI's "Honeycomb-Optimized-Computing" fails with "not a valid Python
-# package name"). Listing files explicitly sidesteps the inference.
-# See .github/workflows/lint.yml and CONTRIBUTING.md for the canonical CLI.
+# NOTE: mypy (and pytest) infer a package name from the cwd's filesystem name
+# because the repo root has an `__init__.py` (declared as `hoc` via pyproject
+# `package-dir = {hoc = "."}`). Inference fails if the directory name has
+# hyphens (e.g. GitHub's default checkout path `Honeycomb-Optimized-Computing`).
+# Mitigation is in .github/workflows/*.yml: every job checks out into a
+# subdirectory named `hoc`, which is always a valid Python identifier.
+# Contributors working locally are fine as long as their checkout directory
+# name is a valid identifier (D:\HOC, ~/hoc, etc.).
 exclude = [
     "tests/",
     "benchmarks/",
