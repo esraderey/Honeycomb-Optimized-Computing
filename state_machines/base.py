@@ -322,6 +322,18 @@ class HocStateMachine:
     def available_triggers(self) -> list[str]:
         return cast("list[str]", self._machine.available_triggers)
 
+    @property
+    def is_final(self) -> bool:
+        """``True`` if the current state has no outgoing transitions
+        (ignores guards). Useful for asserting terminal-state invariants
+        in property tests."""
+        return cast(bool, self._machine.is_final)
+
+    def is_stuck(self, **ctx_kwargs: Any) -> bool:
+        """``True`` if no trigger can fire from the current state, given
+        the supplied context (evaluates guards)."""
+        return cast(bool, self._machine.is_stuck(**ctx_kwargs))
+
     # ── Undo / reset ──────────────────────────────────────────────────────
 
     def undo(self) -> str:
