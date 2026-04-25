@@ -59,6 +59,11 @@ from typing import (
     TypeVar,
 )
 
+# Absolute import: state_machines is top-level, same rationale as
+# core/cells_base.py (dual import paths `HOC.*` vs top-level via sys.path).
+from state_machines.base import HocStateMachine
+from state_machines.task_fsm import build_task_fsm
+
 from .core import HexCoord, HoneycombCell, HoneycombGrid, WorkerCell
 from .nectar import NectarFlow, PheromoneType
 from .security import (
@@ -129,6 +134,33 @@ class HiveTask:
     def __post_init__(self) -> None:
         if not self.task_id:
             self.task_id = f"task_{id(self)}_{time.time():.0f}"
+        # Phase 4.1: wire TaskLifecycle FSM into state mutations. The
+        # dataclass __init__ runs before __post_init__, so the initial
+        # ``state`` field assignment has already landed via __setattr__
+        # without the FSM being present (see __setattr__ guard).
+        self._fsm: HocStateMachine = build_task_fsm()
+        # If the caller passed a non-default state through __init__ (rare;
+        # tests do this to skip the lifecycle), seed the FSM to match.
+        # reset() bypasses guards — it's a configuration call, not a
+        # transition.
+        if self.state is not TaskState.PENDING:
+            self._fsm.reset(self.state.name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        # Phase 4.1: validate ``state`` mutations against the FSM.
+        #
+        # Guard on ``_fsm`` being present in __dict__ rather than using
+        # ``hasattr`` (which is truthy during getattr-descend) so that the
+        # dataclass-generated __init__ passes through unchecked — at that
+        # point __post_init__ has not yet attached the FSM.
+        if name == "state" and "_fsm" in self.__dict__:
+            current = self.__dict__.get("state")
+            # Allow idempotent re-assignment (``task.state = task.state``)
+            # without a transition. Identity check is sufficient because
+            # TaskState is an Enum with singleton members.
+            if current is not value:
+                self._fsm.transition_to(value.name)
+        super().__setattr__(name, value)
 
     def is_expired(self) -> bool:
         """Verifica si la tarea expiró."""

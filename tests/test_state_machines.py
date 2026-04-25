@@ -20,6 +20,7 @@ import pytest
 
 from core.cells_base import CellRole, CellState, HoneycombCell
 from core.grid_geometry import HexCoord
+from hoc.swarm import HiveTask, TaskState
 from state_machines.base import (
     WILDCARD,
     HocStateMachine,
@@ -537,6 +538,89 @@ class TestTaskFSM:
         fsm.transition_to(TASK_COMPLETED)
         with pytest.raises(IllegalStateTransition):
             fsm.transition_to(TASK_PENDING)
+
+
+class TestTaskFSMWired:
+    """Phase 4.1: HiveTask.__setattr__ routes ``state`` mutations through
+    the FSM. Illegal transitions raise :class:`IllegalStateTransition`
+    and the state field is not mutated."""
+
+    def test_task_starts_in_pending(self):
+        task = HiveTask(priority=1)
+        assert task.state == TaskState.PENDING
+        assert task._fsm.state == TASK_PENDING
+
+    def test_legal_transition_pending_to_running(self):
+        task = HiveTask(priority=1)
+        task.state = TaskState.RUNNING
+        assert task.state == TaskState.RUNNING
+        assert task._fsm.state == TASK_RUNNING
+
+    def test_happy_path_running_to_completed(self):
+        task = HiveTask(priority=1)
+        task.state = TaskState.RUNNING
+        task.state = TaskState.COMPLETED
+        assert task._fsm.state == TASK_COMPLETED
+
+    def test_illegal_transition_completed_to_running_raises(self):
+        # COMPLETED is terminal (no outgoing edge back to RUNNING).
+        task = HiveTask(priority=1)
+        task.state = TaskState.RUNNING
+        task.state = TaskState.COMPLETED
+        with pytest.raises(IllegalStateTransition) as excinfo:
+            task.state = TaskState.RUNNING
+        assert excinfo.value.reason == "no_edge"
+        # State did not mutate.
+        assert task.state == TaskState.COMPLETED
+
+    def test_illegal_transition_assigned_dead_state_raises(self):
+        # ASSIGNED is in TaskState enum but not in the FSM (B12-bis).
+        # The wire-up must surface this as a runtime error.
+        task = HiveTask(priority=1)
+        with pytest.raises(IllegalStateTransition) as excinfo:
+            task.state = TaskState.ASSIGNED
+        assert excinfo.value.reason == "unknown_state"
+        assert task.state == TaskState.PENDING
+
+    def test_idempotent_assignment_skips_fsm(self):
+        # Assigning the same state is a no-op — FSM is not consulted,
+        # history is not pushed.
+        task = HiveTask(priority=1)
+        task.state = TaskState.RUNNING
+        assert len(task._fsm.history) == 1  # PENDING -> RUNNING recorded
+        task.state = TaskState.RUNNING  # idempotent
+        assert len(task._fsm.history) == 1  # still 1
+
+    def test_force_completed_from_pending_legal(self):
+        # Test-fixture edge (see task_fsm module docstring). The five
+        # test_swarm.py sites that force terminal states on PENDING tasks
+        # must keep working.
+        task = HiveTask(priority=1)
+        task.state = TaskState.COMPLETED  # PENDING -> COMPLETED direct
+        assert task._fsm.state == TASK_COMPLETED
+
+    def test_force_failed_from_pending_legal(self):
+        task = HiveTask(priority=1)
+        task.state = TaskState.FAILED  # PENDING -> FAILED direct
+        assert task._fsm.state == TASK_FAILED
+
+    def test_non_default_state_at_construction_syncs_fsm(self):
+        # Caller passes state=RUNNING via __init__. The FSM must seed
+        # to RUNNING, not stay at PENDING (which would make subsequent
+        # transitions validate from the wrong source).
+        task = HiveTask(priority=1, state=TaskState.RUNNING)
+        assert task._fsm.state == TASK_RUNNING
+        # And from there, a legal transition proceeds.
+        task.state = TaskState.COMPLETED
+        assert task._fsm.state == TASK_COMPLETED
+
+    def test_retry_path_failed_to_pending(self):
+        # FAILED -> PENDING is the retry edge. Used by swarm.py:1072.
+        task = HiveTask(priority=1)
+        task.state = TaskState.RUNNING
+        task.state = TaskState.FAILED
+        task.state = TaskState.PENDING  # retry
+        assert task._fsm.state == TASK_PENDING
 
 
 # ─── QueenSuccession FSM ──────────────────────────────────────────────────────
