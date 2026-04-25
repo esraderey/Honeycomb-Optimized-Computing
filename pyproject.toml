@@ -189,6 +189,14 @@ exclude = [
     "^metrics/",
     "^nectar\\.py$",
     "^swarm\\.py$",
+    # Phase 4: state_machines/ is type-checked separately (see CI lint
+    # workflow). Excluded here because ``mypy .`` would scan it via
+    # sys.path search AND infer the cwd-name alias (``HOC.state_machines.*``)
+    # for the same files, blocking with a "Source file found twice" error.
+    # Strict mypy is preserved by passing the files explicitly:
+    # ``python -m mypy --explicit-package-bases state_machines/*.py``.
+    # The shell glob bypasses the directory-scan exclude. See ADR-007.
+    "^state_machines/",
 ]
 
 # External untyped deps — ignore missing stubs.
@@ -238,6 +246,18 @@ module = [
 # Full suppression for legacy modules during Phase 3. Future phases tighten
 # per-module by removing entries from this list (and then fixing the resulting
 # errors inline). See ADR-006.
+ignore_errors = true
+
+# Phase 4: state_machines/ is reachable as both ``state_machines.*`` (the
+# top-level alias used by tests and core/cells_base.py absolute import) and
+# ``HOC.state_machines.*`` (the package name mypy infers from the cwd
+# directory ``D:\HOC``). The same physical .py files satisfy both names, and
+# mypy reports "Source file found twice under different module names" if
+# both are scanned. Suppress the cwd-name alias so only the canonical
+# ``state_machines.*`` view is type-checked. The wrapper itself remains
+# strict-mypy via ``mypy state_machines/`` invoked directly in CI.
+[[tool.mypy.overrides]]
+module = ["HOC.state_machines", "HOC.state_machines.*"]
 ignore_errors = true
 
 # ─── Bandit (config here for completeness; CLI call in CI uses these) ─────────
