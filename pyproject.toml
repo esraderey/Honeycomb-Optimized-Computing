@@ -25,6 +25,12 @@ classifiers = [
 ]
 dependencies = [
     "numpy>=1.21.0",
+    # Phase 4: state-machine engine for the hoc.state_machines subpackage.
+    # See ADR-007 for the integration rationale; runtime dep because
+    # FSMs are constructed in production paths (HoneycombCell.state.setter,
+    # HiveTask transitions, QueenSuccession election, PheromoneDeposit decay,
+    # CellFailover migration). Pinned in requirements.txt for CI reproducibility.
+    "tramoya>=1.4.0",
 ]
 
 [project.optional-dependencies]
@@ -52,7 +58,7 @@ dev = [
 
 [tool.setuptools]
 package-dir = {hoc = "."}
-packages = ["hoc", "hoc.core", "hoc.metrics"]
+packages = ["hoc", "hoc.core", "hoc.metrics", "hoc.state_machines"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -67,7 +73,7 @@ addopts = "-v --tb=short --import-mode=importlib"
 pythonpath = ["."]
 # Don't descend into these dirs during collection. Prevents pytest from
 # discovering the package source and trying to treat files there as tests.
-norecursedirs = ["snapshot", "benchmarks", ".hypothesis", ".pytest_cache", "hoc.egg-info", "core", "metrics", "docs", ".git", "__pycache__"]
+norecursedirs = ["snapshot", "benchmarks", ".hypothesis", ".pytest_cache", "hoc.egg-info", "core", "metrics", "state_machines", "docs", ".git", "__pycache__"]
 
 [tool.coverage.run]
 source = ["."]
@@ -187,7 +193,20 @@ exclude = [
 
 # External untyped deps — ignore missing stubs.
 [[tool.mypy.overrides]]
-module = ["mscs", "mscs.*", "hypothesis", "hypothesis.*", "numpy.*", "radon.*"]
+module = [
+    "mscs",
+    "mscs.*",
+    "hypothesis",
+    "hypothesis.*",
+    "numpy.*",
+    "radon.*",
+    # Phase 4: tramoya ships as a single .py with no PEP 561 stubs marker.
+    # Inline annotations exist in the source but mypy can't see them when
+    # follow_imports=silent and no_site_packages=true. Treat as untyped at
+    # the boundary; our own state_machines wrapper provides the typed surface.
+    "tramoya",
+    "tramoya.*",
+]
 ignore_missing_imports = true
 
 # Phase 3: strict mypy is the target, but core.py, metrics.py, bridge.py,

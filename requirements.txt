@@ -2,3 +2,7 @@
 # Dependencias de producción
 
 numpy>=1.21.0
+# Phase 4 (2026-04-24): tramoya powers the state-machine subpackage
+# (CellState/TaskLifecycle/QueenSuccession/PheromoneDeposit/FailoverFlow).
+# Pinned for reproducibility — see ADR-007 for the integration rationale.
+tramoya==1.4.0
