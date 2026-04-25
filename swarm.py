@@ -62,6 +62,7 @@ from typing import (
 # Absolute import: state_machines is top-level, same rationale as
 # core/cells_base.py (dual import paths `HOC.*` vs top-level via sys.path).
 from state_machines.base import HocStateMachine
+from state_machines.reified import transition
 from state_machines.task_fsm import build_task_fsm
 
 from .core import HexCoord, HoneycombCell, HoneycombGrid, WorkerCell
@@ -172,6 +173,37 @@ class HiveTask:
     def can_retry(self) -> bool:
         """Verifica si se puede reintentar."""
         return self.attempts < self.max_attempts
+
+    # ── Phase 4.2: reified transitions (additive API) ─────────────────
+    # These methods are functionally equivalent to ``self.state = X`` —
+    # all call-sites in swarm.py continue to use direct mutation. The
+    # reified API exists so callers can write ``task.claim(worker)``
+    # instead of ``task.state = TaskState.RUNNING; task.assigned_to = ...``,
+    # which reads more naturally and pins the lifecycle in HiveTask
+    # itself (not scattered across SwarmScheduler methods).
+
+    @transition(from_=TaskState.PENDING, to=TaskState.RUNNING)
+    def claim(self, worker: HoneycombCell) -> None:
+        """Worker takes ownership of this task and begins execution."""
+        self.assigned_to = worker.coord
+
+    @transition(from_=TaskState.RUNNING, to=TaskState.COMPLETED)
+    def complete(self, result: Any = None) -> None:
+        """Mark this task complete. ``result`` is stored on the task."""
+        self.result = result
+
+    @transition(from_=TaskState.RUNNING, to=TaskState.FAILED)
+    def fail(self, error: str) -> None:
+        """Mark this task failed. ``error`` is stored on the task."""
+        self.error = error
+        self.attempts += 1
+
+    @transition(from_=TaskState.FAILED, to=TaskState.PENDING)
+    def retry(self) -> None:
+        """Return a failed task to the queue for another attempt.
+        Caller is responsible for checking :meth:`can_retry` first."""
+        self.assigned_to = None
+        self.error = None
 
 
 # Alias para tipos comunes de carga

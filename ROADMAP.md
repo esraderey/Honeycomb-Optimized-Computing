@@ -324,13 +324,36 @@ dead), 3 info (Pheromone/Succession/Failover). Nuevo job CI
 completo: [snapshot/PHASE_04_1_CLOSURE.md](snapshot/PHASE_04_1_CLOSURE.md).
 Decisión de arquitectura: [ADR-008](docs/adr/ADR-008-choreo-static-fsm-verification.md).
 
-### Pendiente (Phase 4.2)
-- Auto-derive: `python -m choreo derive --module X --field Y` produce
-  spec FSM desde código.
-- Reified transitions: decorator `@transition(from_=X, to=Y)` para
-  métodos. Aplicado a 2-3 funciones críticas de HOC (`HiveTask.claim`,
-  `complete`, `fail`) como prueba de migración.
-- Tag prevista: `v1.4.2-phase04.2`.
+---
+
+## FASE 4.2 — `choreo` v0.2: reified + auto-derive — **CERRADA** 🟢
+**Objetivo**: Cuatro mejoras additivas a `choreo` y al subpaquete
+`state_machines/`: walker patterns ampliados (setattr + replace),
+reified transitions decorator (`@transition`), auto-derive subcommand,
+opt-in enum binding.
+**Duración**: 1 día
+**Tag al cerrar**: `v1.4.2-phase04.2` — cierre 2026-04-25
+
+**Resultado**: 734 tests pasando (+29 vs Phase 4.1: 8 walker + 4
+enum_name + 6 derive + 11 reified). 5 walker patterns soportados (vs
+3 en 4.1). 4 métodos reified en `HiveTask` (claim/complete/fail/retry)
+como API additiva. `python -m choreo derive` genera skeletons desde
+código. `cell_fsm.py` y `task_fsm.py` con `enum_name=` explícito.
+choreo aplicado a HOC sigue produciendo el reporte exacto de Phase 4.1
+(0 err / 2 warn / 3 info), confirmando que ninguna feature rompe el
+contrato. Sin nuevas runtime deps. Bandit/pip-audit/ruff/black/mypy
+limpios. Cierre completo:
+[snapshot/PHASE_04_2_CLOSURE.md](snapshot/PHASE_04_2_CLOSURE.md).
+Decisión de arquitectura:
+[ADR-009](docs/adr/ADR-009-reified-transitions-and-auto-derive.md).
+
+### Diferido a Phase 5+
+- B12-bis y B12-ter (dead enum members) — sigue documentado como
+  warning, no resuelto.
+- Walker patterns adicionales (`attrs.evolve`, RHS computado, etc.).
+- `--strict` CI flip espera resolución de B12-bis/ter.
+- Auto-derive con CFG analysis (sources reales) — research-grade,
+  deferred indefinidamente.
 
 ---
 

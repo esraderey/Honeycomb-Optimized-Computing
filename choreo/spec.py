@@ -86,6 +86,11 @@ def _spec_from_fsm(fsm: Any, *, source_file: str) -> FsmSpec | None:
     except AttributeError:
         return None
 
+    # Phase 4.2: optional explicit enum binding. Tolerated as missing on
+    # FSM objects that predate this attribute (i.e. test fakes).
+    enum_name_raw = getattr(fsm, "enum_name", None)
+    enum_name = str(enum_name_raw) if enum_name_raw else None
+
     # Sort states for determinism. ``set`` iteration order is not
     # guaranteed across runs.
     states = tuple(sorted(states_set))
@@ -97,4 +102,5 @@ def _spec_from_fsm(fsm: Any, *, source_file: str) -> FsmSpec | None:
         source_file=source_file,
         states=states,
         transitions=edges,
+        enum_name=enum_name,
     )

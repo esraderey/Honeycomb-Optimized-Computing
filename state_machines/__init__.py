@@ -36,10 +36,12 @@ from .base import (
     HocTransition,
     IllegalStateTransition,
 )
+from .reified import transition
 
 __all__ = [
     "HocStateMachine",
     "HocTransition",
     "IllegalStateTransition",
     "WILDCARD",
+    "transition",
 ]

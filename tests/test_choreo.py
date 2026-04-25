@@ -25,6 +25,7 @@ import pytest
 
 from choreo import walker as choreo_walker
 from choreo.cli import main as choreo_main
+from choreo.derive import derive
 from choreo.diff import bind_fsm_to_enum, compute_findings
 from choreo.spec import _spec_from_fsm
 from choreo.types import (
@@ -206,6 +207,119 @@ class TestWalker:
         muts, _ = choreo_walker.walk(tmp_path)
         assert muts == []
 
+    def test_captures_setattr_pattern(self, tmp_path: Path):
+        _write(
+            tmp_path,
+            "mod.py",
+            """
+            from enum import Enum
+
+            class Color(Enum):
+                RED = 1
+
+            def f(obj):
+                setattr(obj, "state", Color.RED)
+            """,
+        )
+        muts, _ = choreo_walker.walk(tmp_path)
+        assert len(muts) == 1
+        assert muts[0].pattern == "setattr"
+        assert muts[0].enum_name == "Color"
+        assert muts[0].member_name == "RED"
+
+    def test_setattr_non_state_ignored(self, tmp_path: Path):
+        _write(
+            tmp_path,
+            "mod.py",
+            """
+            from enum import Enum
+
+            class Color(Enum):
+                RED = 1
+
+            def f(obj):
+                setattr(obj, "role", Color.RED)
+            """,
+        )
+        muts, _ = choreo_walker.walk(tmp_path)
+        assert muts == []
+
+    def test_setattr_dynamic_attr_name_ignored(self, tmp_path: Path):
+        # When the attr name is a variable, not a literal, choreo cannot
+        # statically know the target — accept the false negative.
+        _write(
+            tmp_path,
+            "mod.py",
+            """
+            from enum import Enum
+
+            class Color(Enum):
+                RED = 1
+
+            def f(obj, attr_name):
+                setattr(obj, attr_name, Color.RED)
+            """,
+        )
+        muts, _ = choreo_walker.walk(tmp_path)
+        assert muts == []
+
+    def test_captures_dataclasses_replace_pattern(self, tmp_path: Path):
+        _write(
+            tmp_path,
+            "mod.py",
+            """
+            import dataclasses
+            from enum import Enum
+
+            class Color(Enum):
+                RED = 1
+
+            def f(obj):
+                dataclasses.replace(obj, state=Color.RED)
+            """,
+        )
+        muts, _ = choreo_walker.walk(tmp_path)
+        assert len(muts) == 1
+        assert muts[0].pattern == "dataclasses.replace"
+        assert muts[0].member_name == "RED"
+
+    def test_captures_bare_replace_pattern(self, tmp_path: Path):
+        _write(
+            tmp_path,
+            "mod.py",
+            """
+            from dataclasses import replace
+            from enum import Enum
+
+            class Color(Enum):
+                RED = 1
+
+            def f(obj):
+                replace(obj, state=Color.RED)
+            """,
+        )
+        muts, _ = choreo_walker.walk(tmp_path)
+        assert len(muts) == 1
+        assert muts[0].pattern == "dataclasses.replace"
+
+    def test_replace_without_state_kwarg_ignored(self, tmp_path: Path):
+        _write(
+            tmp_path,
+            "mod.py",
+            """
+            import dataclasses
+            from enum import Enum
+
+            class Color(Enum):
+                RED = 1
+
+            def f(obj):
+                dataclasses.replace(obj, role=Color.RED)
+            """,
+        )
+        muts, _ = choreo_walker.walk(tmp_path)
+        assert muts == []
+
 
 # ─── Spec helper ──────────────────────────────────────────────────────────────
 
@@ -281,6 +395,51 @@ class TestBindFsmToEnum:
         zeta = self._enum("Zeta", ("A", "B"))
         alpha = self._enum("Alpha", ("A", "B"))
         assert bind_fsm_to_enum(fsm, [zeta, alpha]) is alpha
+
+    def test_explicit_enum_name_overrides_heuristic(self):
+        # Two enums both qualify for the heuristic, but the FSM names
+        # the larger one explicitly. Phase 4.2: explicit wins.
+        fsm = FsmSpec(
+            name="X",
+            source_file="x",
+            states=("A", "B"),
+            transitions=(),
+            enum_name="LargeOne",
+        )
+        small = self._enum("SmallOne", ("A", "B"))
+        large = self._enum("LargeOne", ("A", "B", "C", "D"))
+        # Heuristic would have picked SmallOne; explicit enum_name picks
+        # LargeOne.
+        assert bind_fsm_to_enum(fsm, [small, large]) is large
+
+    def test_explicit_enum_name_inconsistent_returns_none(self):
+        # FSM names an enum whose members do NOT cover the FSM's states.
+        # Returns None (signals inconsistency rather than silently
+        # falling through to the heuristic).
+        fsm = FsmSpec(
+            name="X",
+            source_file="x",
+            states=("A", "B", "MISSING"),
+            transitions=(),
+            enum_name="WrongOne",
+        )
+        wrong = self._enum("WrongOne", ("A", "B"))  # missing MISSING
+        assert bind_fsm_to_enum(fsm, [wrong]) is None
+
+    def test_explicit_enum_name_unknown_falls_back_to_heuristic(self):
+        # Named enum doesn't exist in the codebase. Fall back to
+        # heuristic so the user still gets a binding (probably with a
+        # warning that the named enum is missing — Phase 4.2 leaves
+        # warning emission to the diff layer).
+        fsm = FsmSpec(
+            name="X",
+            source_file="x",
+            states=("A", "B"),
+            transitions=(),
+            enum_name="DoesNotExist",
+        )
+        match = self._enum("Other", ("A", "B"))
+        assert bind_fsm_to_enum(fsm, [match]) is match
 
 
 # ─── Diff: findings ───────────────────────────────────────────────────────────
@@ -367,6 +526,137 @@ class TestComputeFindings:
         assert severities == ["error", "warning", "info"]
 
 
+# ─── Derive ───────────────────────────────────────────────────────────────────
+
+
+class TestDerive:
+    """Phase 4.2: ``choreo derive`` auto-generates a FSM skeleton from
+    observed mutations in a single module."""
+
+    def test_emits_skeleton_for_simple_module(self, tmp_path: Path):
+        mod = _write(
+            tmp_path,
+            "thing.py",
+            """
+            from enum import Enum
+
+            class ThingState(Enum):
+                IDLE = 1
+                BUSY = 2
+
+            def f(obj):
+                obj.state = ThingState.IDLE
+                obj.state = ThingState.BUSY
+            """,
+        )
+        out = derive(mod)
+        # Expected structure markers.
+        assert "build_thing_fsm" in out
+        assert "ThingLifecycle" in out
+        assert "enum_name='ThingState'" in out
+        assert "THINGSTATE_IDLE = 'IDLE'" in out
+        assert "THINGSTATE_BUSY = 'BUSY'" in out
+        assert "WILDCARD, THINGSTATE_IDLE" in out
+        assert "WILDCARD, THINGSTATE_BUSY" in out
+
+    def test_overrides_fsm_name(self, tmp_path: Path):
+        mod = _write(
+            tmp_path,
+            "thing.py",
+            """
+            from enum import Enum
+
+            class ThingState(Enum):
+                A = 1
+
+            def f(obj):
+                obj.state = ThingState.A
+            """,
+        )
+        out = derive(mod, fsm_name="MyCustomFSM")
+        assert "MyCustomFSM" in out
+        assert "build_my_custom_fsm" in out
+
+    def test_overrides_enum_name(self, tmp_path: Path):
+        # Module mentions two enums; user pins one.
+        mod = _write(
+            tmp_path,
+            "thing.py",
+            """
+            from enum import Enum
+
+            class A(Enum):
+                X = 1
+
+            class B(Enum):
+                Y = 2
+
+            def f(obj):
+                obj.state = A.X
+                obj.state = B.Y
+            """,
+        )
+        out = derive(mod, enum_name="B")
+        assert "enum_name='B'" in out
+        assert "B_Y = 'Y'" in out
+        # Default-most-frequent picks A (alphabetical tie); explicit B
+        # should override.
+        assert "A_X" not in out
+
+    def test_overrides_initial(self, tmp_path: Path):
+        mod = _write(
+            tmp_path,
+            "thing.py",
+            """
+            from enum import Enum
+
+            class S(Enum):
+                A = 1
+                B = 2
+
+            def f(obj):
+                obj.state = S.A
+                obj.state = S.B
+            """,
+        )
+        out = derive(mod, initial_state="B")
+        assert "initial=S_B" in out
+
+    def test_initial_not_in_observed_targets_added(self, tmp_path: Path):
+        # Caller specifies an initial state that no mutation observed.
+        # Should still appear in the generated states block.
+        mod = _write(
+            tmp_path,
+            "thing.py",
+            """
+            from enum import Enum
+
+            class S(Enum):
+                A = 1
+                B = 2
+
+            def f(obj):
+                obj.state = S.A
+            """,
+        )
+        out = derive(mod, initial_state="PRE_OBSERVED")
+        assert "S_PRE_OBSERVED = 'PRE_OBSERVED'" in out
+        assert "initial=S_PRE_OBSERVED" in out
+
+    def test_empty_module_emits_placeholder(self, tmp_path: Path):
+        mod = _write(
+            tmp_path,
+            "empty.py",
+            """
+            def f():
+                pass
+            """,
+        )
+        out = derive(mod)
+        assert "No `obj.state = X`" in out
+        assert "TODO" in out
+
+
 # ─── CLI ──────────────────────────────────────────────────────────────────────
 
 
@@ -439,6 +729,50 @@ class TestCli:
 
     def test_invalid_root_exits_two(self, tmp_path: Path, capsys):
         rc = choreo_main(["check", "--root", str(tmp_path / "does-not-exist")])
+        assert rc == 2
+
+    def test_derive_subcommand_to_stdout(self, tmp_path: Path, capsys):
+        mod = _write(
+            tmp_path,
+            "widget.py",
+            """
+            from enum import Enum
+
+            class WidgetState(Enum):
+                ON = 1
+
+            def f(obj):
+                obj.state = WidgetState.ON
+            """,
+        )
+        rc = choreo_main(["derive", str(mod)])
+        out = capsys.readouterr().out
+        assert rc == 0
+        # WidgetState -> WidgetLifecycle -> build_widget_fsm
+        assert "build_widget_fsm" in out
+
+    def test_derive_subcommand_to_file(self, tmp_path: Path, capsys):
+        mod = _write(
+            tmp_path,
+            "widget.py",
+            """
+            from enum import Enum
+
+            class WidgetState(Enum):
+                ON = 1
+
+            def f(obj):
+                obj.state = WidgetState.ON
+            """,
+        )
+        out_file = tmp_path / "out_fsm.py"
+        rc = choreo_main(["derive", str(mod), "-o", str(out_file)])
+        assert rc == 0
+        assert out_file.exists()
+        assert "build_widget_fsm" in out_file.read_text(encoding="utf-8")
+
+    def test_derive_invalid_module_exits_two(self, tmp_path: Path):
+        rc = choreo_main(["derive", str(tmp_path / "nope.py")])
         assert rc == 2
 
 

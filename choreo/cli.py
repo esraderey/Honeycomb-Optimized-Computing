@@ -3,10 +3,14 @@ choreo CLI.
 
 ::
 
-    python -m choreo check                # human-readable
-    python -m choreo check --json         # machine-readable
-    python -m choreo check --strict       # warnings → exit code 1
-    python -m choreo check --root <path>  # alternate project root
+    python -m choreo check                       # human-readable
+    python -m choreo check --json                # machine-readable
+    python -m choreo check --strict              # warnings → exit code 1
+    python -m choreo check --root <path>         # alternate project root
+
+    python -m choreo derive <module.py>          # FSM skeleton to stdout
+    python -m choreo derive <m.py> -o out.py     # ... to file
+    python -m choreo derive <m.py> --fsm-name X --enum-name Y
 
 Exit codes:
     0 — no errors (warnings allowed unless ``--strict``)
@@ -23,6 +27,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from . import __version__
+from .derive import derive
 from .diff import compute_findings
 from .spec import load_specs
 from .types import Finding
@@ -63,6 +68,43 @@ def _build_parser() -> argparse.ArgumentParser:
         "--strict",
         action="store_true",
         help="treat warnings as errors (exit 1 if any warning)",
+    )
+
+    # Phase 4.2: derive sub-command — bootstrapping aid that emits an
+    # FSM skeleton from observed mutations in a single source file.
+    der = sub.add_parser(
+        "derive",
+        help="emit an FSM skeleton from observed mutations in a module",
+    )
+    der.add_argument(
+        "module",
+        type=Path,
+        help="path to the .py file to analyze (e.g. swarm.py)",
+    )
+    der.add_argument(
+        "--fsm-name",
+        type=str,
+        default=None,
+        help="override the default FSM name (heuristic from the enum)",
+    )
+    der.add_argument(
+        "--enum-name",
+        type=str,
+        default=None,
+        help="restrict to mutations against this enum (default: most-frequent)",
+    )
+    der.add_argument(
+        "--initial",
+        type=str,
+        default=None,
+        help="initial state of the FSM (default: first observed target)",
+    )
+    der.add_argument(
+        "-o",
+        "--output",
+        type=Path,
+        default=None,
+        help="write to this file (default: stdout)",
     )
 
     return parser
@@ -116,10 +158,16 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
-    if args.command != "check":
-        parser.print_help()
-        return 2
+    if args.command == "check":
+        return _run_check(args)
+    if args.command == "derive":
+        return _run_derive(args)
 
+    parser.print_help()
+    return 2
+
+
+def _run_check(args: argparse.Namespace) -> int:
     root: Path = args.root.resolve()
     if not root.is_dir():
         print(f"choreo: --root {root} is not a directory", file=sys.stderr)
@@ -139,4 +187,29 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if args.strict and has_warnings:
         return 1
+    return 0
+
+
+def _run_derive(args: argparse.Namespace) -> int:
+    module: Path = args.module.resolve()
+    if not module.is_file():
+        print(f"choreo: --module {module} is not a file", file=sys.stderr)
+        return 2
+
+    try:
+        skeleton = derive(
+            module,
+            fsm_name=args.fsm_name,
+            enum_name=args.enum_name,
+            initial_state=args.initial,
+        )
+    except (OSError, ValueError, RuntimeError) as exc:
+        print(f"choreo: derive failed: {exc}", file=sys.stderr)
+        return 1
+
+    if args.output is None:
+        sys.stdout.write(skeleton)
+    else:
+        args.output.write_text(skeleton, encoding="utf-8")
+        print(f"choreo: wrote {args.output}", file=sys.stderr)
     return 0
