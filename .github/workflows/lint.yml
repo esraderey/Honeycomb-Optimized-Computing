@@ -80,3 +80,33 @@ jobs:
       # See ADR-006 for the graduation plan. With the checkout pinned to a
       # valid-Python-identifier path ("hoc"), `python -m mypy .` works now.
       - run: python -m mypy .
+      # Phase 4: state_machines/ is excluded from `mypy .` because the
+      # cwd-name inference (HOC.state_machines.*) collides with sys.path
+      # search (state_machines.*). Strict mypy is preserved by listing
+      # the files via shell glob — the directory exclude does not apply
+      # to explicit file args. See ADR-007.
+      - run: python -m mypy --explicit-package-bases state_machines/*.py
+
+  state-machines-doc:
+    name: state-machines.md drift check
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: hoc
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: hoc
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: hoc/pyproject.toml
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+      # Phase 4: regenerate docs/state-machines.md and fail if it differs
+      # from what is on disk. Same check tests/test_mermaid_export.py
+      # runs locally via pytest. See ADR-007.
+      - run: python scripts/generate_state_machines_md.py --check
