@@ -41,8 +41,29 @@ from .types import (
 
 
 def bind_fsm_to_enum(fsm: FsmSpec, enums: list[EnumDecl]) -> EnumDecl | None:
-    """Return the smallest enum whose member set contains every state in
-    ``fsm.states``. Returns None if no enum qualifies."""
+    """Return the enum bound to ``fsm``, or None.
+
+    Phase 4.2: explicit binding takes priority. If ``fsm.enum_name`` is
+    set, look up the enum with that exact name. If found and its members
+    are a superset of ``fsm.states``, return it; if found but inconsistent
+    return None (the caller will surface this as a diagnostic). If
+    ``fsm.enum_name`` is unset, fall back to the member-subset heuristic
+    from Phase 4.1.
+    """
+    if fsm.enum_name is not None:
+        # Explicit binding requested. Match by name, validate consistency.
+        for enum in enums:
+            if enum.name == fsm.enum_name:
+                if set(fsm.states).issubset(set(enum.members)):
+                    return enum
+                # Name match but member mismatch — return None so the
+                # caller flags an inconsistency (declarative_only fallback
+                # would mask the bug).
+                return None
+        # Named enum not found anywhere. Fall back to heuristic — the
+        # user may have renamed and forgotten; heuristic catches that.
+        # Falls through to the heuristic block below.
+
     fsm_states = set(fsm.states)
     candidates: list[EnumDecl] = []
     for enum in enums:

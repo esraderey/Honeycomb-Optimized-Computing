@@ -154,4 +154,10 @@ def build_cell_fsm() -> HocStateMachine:
         # Per-cell FSMs accumulate one history entry per state change.
         # Cap small to bound memory across thousands of cells in a grid.
         history_size=8,
+        # Phase 4.2: explicit binding to the host enum. choreo uses this
+        # to pick the right enum without member-subset heuristics. The
+        # enum class name is referenced as a string to keep this module
+        # importable without pulling in core/cells_base.py (avoids a
+        # circular import: core.cells_base imports from state_machines).
+        enum_name="CellState",
     )

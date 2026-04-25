@@ -44,12 +44,18 @@ class FsmSpec:
 
     ``transitions`` is the full edge set, including wildcards (source
     may be the literal ``"*"`` for wildcard sources).
+
+    ``enum_name`` is set when the FSM was constructed with
+    ``HocStateMachine(..., enum_name="X")``. When present, choreo binds
+    to the matching :class:`EnumDecl` directly (overriding the
+    member-subset heuristic).
     """
 
     name: str
     source_file: str
     states: tuple[str, ...]
     transitions: tuple[tuple[str, str, str], ...]  # (source, dest, trigger)
+    enum_name: str | None = None
 
 
 @dataclass(frozen=True, order=True)

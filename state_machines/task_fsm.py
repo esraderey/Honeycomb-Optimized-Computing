@@ -158,4 +158,10 @@ def build_task_fsm() -> HocStateMachine:
         transitions=transitions,
         initial=TASK_PENDING,
         history_size=4,
+        # Phase 4.2: explicit binding to the host enum. choreo uses this
+        # to detect B12-bis (TaskState.ASSIGNED in enum but not in FSM)
+        # without relying on member-subset heuristics. String to avoid
+        # circular import (swarm.py imports build_task_fsm from this
+        # module).
+        enum_name="TaskState",
     )

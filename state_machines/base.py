@@ -164,11 +164,19 @@ class HocStateMachine:
         on_transition: ObserverFn | None = None,
         ctx: Mapping[str, Any] | None = None,
         history_size: int = 50,
+        enum_name: str | None = None,
     ) -> None:
         if not name:
             raise ValueError("HocStateMachine requires a non-empty name")
 
         self._name = name
+        # Phase 4.2: optional explicit binding to an enum class by name.
+        # When present, choreo prefers this over its member-subset
+        # heuristic. Pass the enum class name as a string (rather than
+        # the class itself) to avoid forcing FSM modules to import their
+        # host module — which would create circular imports for
+        # task_fsm.py ↔ swarm.py and cell_fsm.py ↔ core/cells_base.py.
+        self._enum_name = enum_name
         # dest -> [(source, trigger), ...] in declaration order.
         # transition_to() walks this index to find the right trigger to fire.
         self._dest_index: dict[str, list[tuple[str, str]]] = {}
@@ -225,6 +233,16 @@ class HocStateMachine:
     def ctx(self) -> dict[str, Any]:
         """Mutable context dict carried through the machine."""
         return cast("dict[str, Any]", self._machine.ctx)
+
+    @property
+    def enum_name(self) -> str | None:
+        """Name of the enum class this FSM models, if explicitly bound.
+
+        ``None`` means the FSM was constructed without ``enum_name=`` and
+        the static checker (choreo) falls back to its member-subset
+        heuristic. Set explicitly to disambiguate when two enums share
+        member sets, or to act as documentation for readers."""
+        return self._enum_name
 
     @property
     def transitions(self) -> list[tuple[str, str, str]]:

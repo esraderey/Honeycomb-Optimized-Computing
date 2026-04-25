@@ -3,21 +3,25 @@ AST walker that discovers state mutations and Enum declarations.
 
 For each ``.py`` file under ``root`` (excluding ``tests/``, ``benchmarks/``,
 ``snapshot/``, the ``choreo`` package itself, and a few standard
-directories), parses the AST and looks for two patterns:
+directories), parses the AST and looks for these patterns:
 
-1. ``obj.state = EnumName.MEMBER`` — a direct mutation.
+1. ``obj.state = EnumName.MEMBER`` — direct attribute assignment.
 2. ``obj._set_state(EnumName.MEMBER)`` — HOC's internal setter wrapper
    used inside ``core/cells_base.py``. Without this, transitions like
    ``ACTIVE`` (only ever set internally) would falsely look dead.
-
-3. ``class X(Enum):`` (or ``class X(enum.Enum)``) — an enum decl,
-   captured with its member names. Member names are the LHS of any
-   ``Name = <expr>`` statement in the class body.
+3. ``setattr(obj, "state", EnumName.MEMBER)`` — dynamic attribute set.
+   Phase 4.2: catches the case where a refactor switches from direct
+   assignment to setattr (would otherwise bypass choreo silently).
+4. ``dataclasses.replace(obj, state=EnumName.MEMBER)`` (or just
+   ``replace(...)`` if imported directly) — the canonical immutable-
+   update pattern. Phase 4.2: same rationale as #3.
+5. ``class X(Enum):`` (or ``class X(enum.Enum)``) — an enum decl,
+   captured with its member names.
 
 The walker performs no type resolution; it matches purely on syntactic
-shape. False negatives are possible (e.g. ``obj.state = func_returning_a_state()``,
-``setattr(obj, "state", X)``, computed attribute names) but for HOC's
-codebase the two literal patterns cover every observed call-site.
+shape. Remaining false negatives (computed attribute names,
+descriptor-driven mutation, eval/exec) are accepted in exchange for
+keeping the implementation ~200 LOC and free of external deps.
 """
 
 from __future__ import annotations
@@ -80,8 +84,9 @@ class _Visitor(ast.NodeVisitor):
             )
         self.generic_visit(node)
 
-    # ── Pattern 2: obj._set_state(EnumName.MEMBER) ──────────────────────
+    # ── Patterns 2-4: call-shaped mutations ─────────────────────────────
     def visit_Call(self, node: ast.Call) -> None:
+        # Pattern 2: obj._set_state(EnumName.MEMBER)
         func = node.func
         if isinstance(func, ast.Attribute) and func.attr == "_set_state" and len(node.args) >= 1:
             extracted = _extract_enum_member(node.args[0])
@@ -96,6 +101,47 @@ class _Visitor(ast.NodeVisitor):
                         pattern="_set_state",
                     )
                 )
+
+        # Pattern 3: setattr(obj, "state", EnumName.MEMBER)
+        elif (
+            isinstance(func, ast.Name)
+            and func.id == "setattr"
+            and len(node.args) == 3
+            and isinstance(node.args[1], ast.Constant)
+            and node.args[1].value == "state"
+        ):
+            extracted = _extract_enum_member(node.args[2])
+            if extracted is not None:
+                enum_name, member_name = extracted
+                self.mutations.append(
+                    Mutation(
+                        file=self.file,
+                        line=node.lineno,
+                        enum_name=enum_name,
+                        member_name=member_name,
+                        pattern="setattr",
+                    )
+                )
+
+        # Pattern 4: dataclasses.replace(obj, state=EnumName.MEMBER)
+        # or replace(obj, state=EnumName.MEMBER) when imported directly.
+        elif _is_replace_call(func):
+            for kw in node.keywords:
+                if kw.arg == "state":
+                    extracted = _extract_enum_member(kw.value)
+                    if extracted is not None:
+                        enum_name, member_name = extracted
+                        self.mutations.append(
+                            Mutation(
+                                file=self.file,
+                                line=node.lineno,
+                                enum_name=enum_name,
+                                member_name=member_name,
+                                pattern="dataclasses.replace",
+                            )
+                        )
+                    break
+
         self.generic_visit(node)
 
     # ── Pattern 3: class X(Enum) ─────────────────────────────────────────
@@ -136,6 +182,22 @@ def _extract_enum_member(value: ast.expr) -> tuple[str, str] | None:
     return value.value.id, value.attr
 
 
+def _is_replace_call(func: ast.expr) -> bool:
+    """Match ``dataclasses.replace`` or bare ``replace`` (imported as
+    ``from dataclasses import replace``). Other libs with a ``replace``
+    function (e.g. attrs, named tuples) produce false positives — but
+    only if the call also uses ``state=`` keyword, which is rare outside
+    state-machine code."""
+    if isinstance(func, ast.Name) and func.id == "replace":
+        return True
+    return (
+        isinstance(func, ast.Attribute)
+        and func.attr == "replace"
+        and isinstance(func.value, ast.Name)
+        and func.value.id == "dataclasses"
+    )
+
+
 def _extract_enum_members(class_node: ast.ClassDef) -> list[str]:
     """Collect ``NAME = <expr>`` statements (the convention for enum members)."""
     members: list[str] = []
@@ -152,6 +214,29 @@ def _extract_enum_members(class_node: ast.ClassDef) -> list[str]:
 def _is_excluded(path: Path, exclude: frozenset[str]) -> bool:
     """True if any directory in ``path``'s ancestry is in ``exclude``."""
     return bool(set(path.parts) & exclude)
+
+
+def walk_file(
+    path: Path,
+    *,
+    display_name: str | None = None,
+) -> tuple[list[Mutation], list[EnumDecl]]:
+    """Parse a single ``.py`` file. Returns ``([], [])`` on read or
+    parse error. ``display_name`` overrides the file path stored in the
+    findings (useful for choreo derive, which wants the relative-to-root
+    path even when called with an absolute file argument)."""
+    try:
+        source = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return [], []
+    try:
+        tree = ast.parse(source, filename=str(path))
+    except SyntaxError:
+        return [], []
+
+    visitor = _Visitor(file=display_name or str(path).replace("\\", "/"))
+    visitor.visit(tree)
+    return visitor.mutations, visitor.enums
 
 
 def walk(
@@ -176,18 +261,8 @@ def walk(
         rel = path.relative_to(root)
         if _is_excluded(rel.parent, exclude):
             continue
-        try:
-            source = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            continue
-        try:
-            tree = ast.parse(source, filename=str(path))
-        except SyntaxError:
-            continue
-
-        visitor = _Visitor(file=str(rel).replace("\\", "/"))
-        visitor.visit(tree)
-        all_mutations.extend(visitor.mutations)
-        all_enums.extend(visitor.enums)
+        muts, enums = walk_file(path, display_name=str(rel).replace("\\", "/"))
+        all_mutations.extend(muts)
+        all_enums.extend(enums)
 
     return all_mutations, all_enums
