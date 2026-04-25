@@ -8,6 +8,91 @@ y este proyecto adhiere a [Semantic Versioning](https://semver.org/lang/es/).
 
 ---
 
+## [1.4.1-phase04.1] — 2026-04-24
+
+**Cierre de Fase 4.1 — TaskLifecycle wire-up + `choreo` static FSM checker.**
+705 tests pasando (+42 vs Phase 4: 10 wire-up + 32 choreo). Una segunda
+FSM declarativa de Phase 4 (`TaskLifecycle`) **graduada a wired** vía
+`HiveTask.__setattr__`: cada `task.state = X` ahora valida la transición
+contra el FSM y rechaza estados ilegales con `IllegalStateTransition`.
+Nueva herramienta `choreo` (subpaquete propio en `choreo/`, ~600 LOC)
+realiza verificación estática AST-based sobre el repo: detecta
+mutaciones undocumented, dead states, enum-extra states, FSMs declarative-
+only. Aplicada a HOC produce el reporte exacto esperado: 0 errores,
+2 warnings (B12-bis, B12-ter), 3 info. Nuevo job CI `choreo-static-check`
+en `lint.yml`. Sin nuevas dependencias runtime. Bandit/pip-audit/ruff/
+black/mypy limpio.
+
+Reporte completo: [snapshot/PHASE_04_1_CLOSURE.md](snapshot/PHASE_04_1_CLOSURE.md).
+
+### Added
+
+#### `choreo/` — static FSM verification (new subpackage, MIT)
+- `choreo/walker.py` — `ast.NodeVisitor` que captura tres patrones:
+  `obj.state = ENUM.MEMBER`, `obj._set_state(ENUM.MEMBER)`, y
+  `class X(Enum)` con sus members.
+- `choreo/spec.py` — importa `state_machines/*_fsm.py`, llama
+  `build_<stem>()`, extrae estados + transiciones del `HocStateMachine`.
+- `choreo/diff.py` — bind FSM↔Enum por subset de members; produce
+  findings con severidades error/warning/info.
+- `choreo/cli.py` — entry point `python -m choreo check` con
+  `--json`, `--strict`, `--root <path>`, `--specs-dir <name>`.
+- `choreo/types.py` — frozen dataclasses (Mutation, EnumDecl,
+  FsmSpec, Finding) determinísticos para comparación + serialización.
+
+#### Wire-up TaskLifecycle (Phase 4 declarativa → wired)
+- `HiveTask.__post_init__` instancia un `_fsm = build_task_fsm()`
+  por tarea.
+- `HiveTask.__setattr__` rutea cada `task.state = X` a
+  `_fsm.transition_to(X.name)`. Levanta `IllegalStateTransition` en
+  edges no declaradas (e.g. `COMPLETED → RUNNING`, `RUNNING → PENDING`
+  sin retry).
+- Dos transiciones explícitas (NO wildcards) añadidas a
+  `state_machines/task_fsm.py` para los 5 test-sites de
+  `tests/test_swarm.py` que fuerzan estados terminales sobre tareas
+  PENDING (`force_completed_from_pending`,
+  `force_failed_from_pending`).
+- Sync vía `_fsm.reset(state.name)` cuando el caller pasa un state
+  no-default por `__init__`.
+
+#### CI
+- Nuevo job **`choreo-static-check`** en `.github/workflows/lint.yml`
+  corre `python -m choreo check` y `python -m choreo check --json` para
+  validar JSON shape.
+
+#### Documentation
+- **ADR-008** — `choreo`, static FSM verification complementary to
+  runtime wire-up.
+
+#### `state_machines/`
+- Nueva property `HocStateMachine.transitions` retorna lista de
+  edges `(source, dest, trigger)`. Usada por `choreo/spec.py` para
+  evitar acceso a `_dest_index` privado.
+- Docstring de `task_fsm.py` actualizada — ya no es declarativa-only.
+
+#### Tests
+- `tests/test_choreo.py` — 32 tests (walker, spec, diff, CLI, HOC
+  integration smoke).
+- `tests/test_state_machines.py::TestTaskFSMWired` — 10 tests del
+  wire-up (legal/ilegal/idempotente/ASSIGNED dead/test-fixture
+  edges/sync).
+
+### Detected (deferred to Phase 5+)
+
+choreo confirmó al correrse contra HOC los dos bugs latentes
+documentados en Phase 4:
+
+- **B12-bis** — `TaskState.ASSIGNED` declarado en `swarm.py:90` pero
+  nunca asignado (warning `enum_extra_state`).
+- **B12-ter** — `CellState.{SPAWNING, MIGRATING, SEALED, OVERLOADED}`
+  declarados en `core/cells_base.py:51` pero nunca asignados (warning
+  `dead_state`).
+
+Tras resolución de ambos en Phase 5+, el job CI puede flippear a
+`--strict` para hacer fail también con warnings.
+
+---
+
 ## [1.4.0-phase04] — 2026-04-24
 
 **Cierre de Fase 4 — Configuración & Developer Experience (FSM integration).**
@@ -170,6 +255,7 @@ Reporte completo: [snapshot/PHASE_04_CLOSURE.md](snapshot/PHASE_04_CLOSURE.md).
 - radon CC: 11 funciones >10 (todas legacy, sin cambios estructurales)
 - pytest: **663/663 passing**
 
+[1.4.1-phase04.1]: https://github.com/esraderey/Honeycomb-Optimized-Computing/releases/tag/v1.4.1-phase04.1
 [1.4.0-phase04]: https://github.com/esraderey/Honeycomb-Optimized-Computing/releases/tag/v1.4.0-phase04
 
 ---

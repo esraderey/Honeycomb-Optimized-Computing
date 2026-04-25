@@ -304,6 +304,36 @@ architect = "my_pkg.behaviors:ArchitectBehavior"
 
 ---
 
+## FASE 4.1 — Wire-up TaskLifecycle + `choreo` static FSM checker — **CERRADA** 🟢
+**Objetivo**: Cerrar la brecha entre las 4 FSMs declarativas y las 1 wired
+con (a) wire-up real de TaskLifecycle y (b) una herramienta nueva,
+`choreo`, que verifica estáticamente las FSMs sin necesidad de wire-up
+en runtime.
+**Duración**: 1 día
+**Tag al cerrar**: `v1.4.1-phase04.1` — cierre 2026-04-24
+
+**Resultado**: 705 tests pasando (+42 vs Phase 4: 10 wire-up + 32 choreo).
+TaskLifecycle FSM **wired** vía `HiveTask.__setattr__` (ahora 2 de 5 FSMs
+wired). Nueva herramienta `choreo` (~600 LOC, subpaquete propio en
+`choreo/`) implementa verificación estática AST-based: detecta mutaciones
+undocumented (errores), dead states + enum-extras (warnings), FSMs
+declarative-only (info). Aplicada a HOC produce el reporte exacto: 0
+errores, 2 warnings (B12-bis `TaskState.ASSIGNED`, B12-ter 4 `CellState`
+dead), 3 info (Pheromone/Succession/Failover). Nuevo job CI
+`choreo-static-check` en `lint.yml`. Sin nuevas runtime deps. Cierre
+completo: [snapshot/PHASE_04_1_CLOSURE.md](snapshot/PHASE_04_1_CLOSURE.md).
+Decisión de arquitectura: [ADR-008](docs/adr/ADR-008-choreo-static-fsm-verification.md).
+
+### Pendiente (Phase 4.2)
+- Auto-derive: `python -m choreo derive --module X --field Y` produce
+  spec FSM desde código.
+- Reified transitions: decorator `@transition(from_=X, to=Y)` para
+  métodos. Aplicado a 2-3 funciones críticas de HOC (`HiveTask.claim`,
+  `complete`, `fail`) como prueba de migración.
+- Tag prevista: `v1.4.2-phase04.2`.
+
+---
+
 ## FASE 5 — Observabilidad
 **Objetivo**: Visibilidad operacional production-grade. **Integración de [trame](https://kitware.github.io/trame/)** (asumiendo que "tramoya" del usuario era trame para dashboards) — opcional, ver nota.
 **Duración**: 3 semanas

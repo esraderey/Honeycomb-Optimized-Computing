@@ -35,6 +35,7 @@ fully explained by the code itself.
 | [ADR-005](ADR-005-raft-like-quorum.md) | Raft-like signed-vote quorum in `QueenSuccession` (not full Paxos) | Accepted | Phase 2 |
 | [ADR-006](ADR-006-mypy-legacy-suppression.md) | Legacy modules suppressed from strict mypy in Phase 3 | Accepted | Phase 3 |
 | [ADR-007](ADR-007-tramoya-fsm-integration.md) | Tramoya as the FSM engine, with one wired + four declarative state machines | Accepted | Phase 4 |
+| [ADR-008](ADR-008-choreo-static-fsm-verification.md) | `choreo` — static FSM verification, complementary to runtime wire-up | Accepted | Phase 4.1 |
 
 ## Template
 

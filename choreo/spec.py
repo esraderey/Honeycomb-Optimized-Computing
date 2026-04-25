@@ -45,9 +45,12 @@ def load_specs(root: Path, *, subdir: str = "state_machines") -> list[FsmSpec]:
 
         try:
             module = importlib.import_module(module_name)
-        except Exception:
+        except (ImportError, ModuleNotFoundError, SyntaxError):
             # Treat unimportable modules as absent. Most likely cause is
-            # a circular import or a missing optional dep.
+            # a circular import, a missing optional dep, or a syntax
+            # error in the spec file itself. Other exception types (e.g.
+            # NameError from broken module-level code) propagate so the
+            # user sees the bug.
             continue
 
         builder = getattr(module, builder_name, None)
@@ -56,7 +59,10 @@ def load_specs(root: Path, *, subdir: str = "state_machines") -> list[FsmSpec]:
 
         try:
             fsm = builder()
-        except Exception:
+        except (TypeError, ValueError, AttributeError):
+            # A builder that returns the wrong type or trips on its own
+            # arguments is "skip-able"; deeper errors (RuntimeError, etc.)
+            # propagate so they are not silently swallowed.
             continue
 
         spec = _spec_from_fsm(fsm, source_file=str(path.relative_to(root)).replace("\\", "/"))
