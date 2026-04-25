@@ -8,6 +8,91 @@ y este proyecto adhiere a [Semantic Versioning](https://semver.org/lang/es/).
 
 ---
 
+## [1.4.2-phase04.2] — 2026-04-25
+
+**Cierre de Fase 4.2 — `choreo` v0.2: reified transitions + auto-derive
++ walker patterns + opt-in enum binding.** 734 tests pasando (+29 vs
+Phase 4.1: 8 walker + 4 enum_name + 6 derive + 11 reified). Cuatro
+mejoras additivas a `choreo` y al subpaquete `state_machines/`, sin
+romper contratos de Phase 4.1. Sin nuevas dependencies runtime.
+Bandit/pip-audit/ruff/black/mypy todos limpios. choreo aplicado a HOC
+sigue reportando idéntico (0 err / 2 warn / 3 info).
+
+Reporte completo: [snapshot/PHASE_04_2_CLOSURE.md](snapshot/PHASE_04_2_CLOSURE.md).
+
+### Added
+
+#### `choreo` v0.2 — walker patterns
+- `setattr(obj, "state", EnumName.MEMBER)` capture (con `pattern="setattr"`).
+- `dataclasses.replace(obj, state=EnumName.MEMBER)` capture (con
+  `pattern="dataclasses.replace"`). Soporta tanto la forma qualified
+  como bare (`from dataclasses import replace`).
+
+#### `choreo` v0.2 — `derive` subcommand
+- `python -m choreo derive <module.py>` emite skeleton FSM desde
+  mutations observadas. Output usa `WILDCARD` para sources (el
+  contribuyente edita).
+- Opciones: `--fsm-name`, `--enum-name`, `--initial`, `-o/--output`.
+- Heurística de naming: `TaskState` → `TaskLifecycle` →
+  `build_task_fsm`.
+
+#### `state_machines/reified.py` — `@transition` decorator
+- Decorator factory `transition(from_=X, to=Y)` para declarar
+  transiciones inline en métodos.
+- Comportamiento: pre-condición → ejecuta método → muta state si
+  retorna OK; no muta si excepción.
+- Stores `__choreo_transition__ = (from_, to)` en el método para
+  introspección futura.
+
+#### Reified API en `HiveTask` (additive)
+- `task.claim(worker)` (PENDING → RUNNING)
+- `task.complete(result=None)` (RUNNING → COMPLETED)
+- `task.fail(error)` (RUNNING → FAILED)
+- `task.retry()` (FAILED → PENDING)
+- 16 call-sites en `swarm.py` siguen usando direct mutation; las dos
+  APIs coexisten.
+
+#### `HocStateMachine.enum_name=` (opt-in metadata)
+- Nuevo parámetro `enum_name: str | None = None` en
+  `HocStateMachine.__init__`.
+- `choreo/diff.py::bind_fsm_to_enum` prefiere binding explícito sobre
+  heurística cuando se setea.
+- Strings (no `type[Enum]`) para evitar circular imports.
+- `cell_fsm.py` y `task_fsm.py` actualizados con `enum_name="CellState"`
+  y `enum_name="TaskState"`.
+
+#### Documentation
+- **ADR-009** — Reified transitions + auto-derive (`choreo` v0.2).
+
+#### Tests
+- `tests/test_choreo.py::TestWalker` — 6 nuevos (setattr + replace).
+- `tests/test_choreo.py::TestBindFsmToEnum` — 3 nuevos (enum_name).
+- `tests/test_choreo.py::TestDerive` — 6 tests del derive helper.
+- `tests/test_choreo.py::TestCli` — 3 nuevos (subcommand derive).
+- `tests/test_state_machines.py::TestReifiedDecoratorIsolated` — 5.
+- `tests/test_state_machines.py::TestReifiedHiveTask` — 6.
+
+### Changed
+
+- `state_machines/base.py` — `HocStateMachine.__init__` acepta
+  `enum_name`; nueva property `enum_name`.
+- `state_machines/__init__.py` — re-exporta `transition`.
+- `choreo/walker.py` — visit_Call extendido con setattr y
+  dataclasses.replace; nuevo `walk_file()` para uso single-file.
+- `choreo/types.py` — `FsmSpec.enum_name: str | None = None` opcional.
+- `choreo/spec.py` — `_spec_from_fsm` lee `fsm.enum_name`.
+- `choreo/diff.py::bind_fsm_to_enum` prefiere enum_name explícito.
+- `choreo/cli.py` — agrega subcommand `derive`.
+
+### Deferred (Phase 5+)
+
+- B12-bis (`TaskState.ASSIGNED`) y B12-ter (4 `CellState` dead) sin
+  resolución; warning de CI persiste.
+- `--strict` flip en CI espera resolución de los anteriores.
+- Auto-derive con CFG analysis (sources reales) deferred a Phase 11+.
+
+---
+
 ## [1.4.1-phase04.1] — 2026-04-24
 
 **Cierre de Fase 4.1 — TaskLifecycle wire-up + `choreo` static FSM checker.**
@@ -255,6 +340,7 @@ Reporte completo: [snapshot/PHASE_04_CLOSURE.md](snapshot/PHASE_04_CLOSURE.md).
 - radon CC: 11 funciones >10 (todas legacy, sin cambios estructurales)
 - pytest: **663/663 passing**
 
+[1.4.2-phase04.2]: https://github.com/esraderey/Honeycomb-Optimized-Computing/releases/tag/v1.4.2-phase04.2
 [1.4.1-phase04.1]: https://github.com/esraderey/Honeycomb-Optimized-Computing/releases/tag/v1.4.1-phase04.1
 [1.4.0-phase04]: https://github.com/esraderey/Honeycomb-Optimized-Computing/releases/tag/v1.4.0-phase04
 
