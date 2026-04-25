@@ -226,6 +226,20 @@ class HocStateMachine:
         """Mutable context dict carried through the machine."""
         return cast("dict[str, Any]", self._machine.ctx)
 
+    @property
+    def transitions(self) -> list[tuple[str, str, str]]:
+        """All declared edges as ``(source, dest, trigger)`` triples.
+
+        Source may be :data:`WILDCARD`. Order matches construction order.
+        Used by the static-checker (``choreo``) to walk the spec graph
+        without touching ``_dest_index`` directly.
+        """
+        result: list[tuple[str, str, str]] = []
+        for dest, pairs in self._dest_index.items():
+            for source, trigger in pairs:
+                result.append((source, dest, trigger))
+        return result
+
     # ── Destination-driven API ────────────────────────────────────────────
 
     def can_transition_to(self, target: str, **ctx_kwargs: Any) -> bool:
