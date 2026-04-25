@@ -623,6 +623,138 @@ class TestTaskFSMWired:
         assert task._fsm.state == TASK_PENDING
 
 
+# ─── Reified transitions (Phase 4.2) ──────────────────────────────────────────
+
+
+class TestReifiedDecoratorIsolated:
+    """Phase 4.2: ``@transition`` decorator unit tests on a synthetic
+    host class (no HiveTask, no FSM wire-up) to verify the decorator's
+    behavior in isolation."""
+
+    def _make_host(self):
+        from state_machines.reified import transition
+
+        class Host:
+            def __init__(self):
+                self.state = "A"
+                self.work_done = False
+
+            @transition(from_="A", to="B")
+            def go_b(self):
+                self.work_done = True
+
+            @transition(from_=None, to="C")
+            def force_c(self):
+                # from_=None means "any source"
+                pass
+
+            @transition(from_="A", to="B")
+            def boom(self):
+                raise RuntimeError("kaboom")
+
+        return Host
+
+    def test_transition_runs_method_and_mutates_state(self):
+        Host = self._make_host()
+        h = Host()
+        h.go_b()
+        assert h.state == "B"
+        assert h.work_done is True
+
+    def test_from_mismatch_raises(self):
+        Host = self._make_host()
+        h = Host()
+        h.state = "X"  # Bypass: we test the decorator's pre-check.
+        with pytest.raises(IllegalStateTransition) as excinfo:
+            h.go_b()
+        assert excinfo.value.reason == "reified_from_mismatch"
+        assert h.state == "X"  # No mutation.
+        assert getattr(h, "work_done", False) is False
+
+    def test_method_exception_does_not_mutate(self):
+        Host = self._make_host()
+        h = Host()
+        with pytest.raises(RuntimeError, match="kaboom"):
+            h.boom()
+        assert h.state == "A"  # Decorator did NOT advance to "B".
+
+    def test_from_none_skips_precondition(self):
+        Host = self._make_host()
+        h = Host()
+        h.state = "anything-goes"
+        h.force_c()
+        assert h.state == "C"
+
+    def test_metadata_attached(self):
+        Host = self._make_host()
+        assert Host.go_b.__choreo_transition__ == ("A", "B")
+        assert Host.force_c.__choreo_transition__ == (None, "C")
+
+
+class TestReifiedHiveTask:
+    """Phase 4.2: HiveTask.claim/complete/fail/retry are reified
+    transitions over the existing TaskLifecycle wire-up."""
+
+    def test_claim_running(self):
+        task = HiveTask(priority=1)
+        # We need a HoneycombCell-like worker; use the resilience tests'
+        # helper or just construct one directly.
+        worker = HoneycombCell(coord=HexCoord(1, 1), role=CellRole.WORKER)
+        task.claim(worker)
+        assert task.state == TaskState.RUNNING
+        assert task.assigned_to == worker.coord
+
+    def test_complete_stores_result(self):
+        task = HiveTask(priority=1)
+        worker = HoneycombCell(coord=HexCoord(1, 1), role=CellRole.WORKER)
+        task.claim(worker)
+        task.complete(result="ok")
+        assert task.state == TaskState.COMPLETED
+        assert task.result == "ok"
+
+    def test_fail_increments_attempts(self):
+        task = HiveTask(priority=1)
+        worker = HoneycombCell(coord=HexCoord(1, 1), role=CellRole.WORKER)
+        task.claim(worker)
+        task.fail("oh no")
+        assert task.state == TaskState.FAILED
+        assert task.error == "oh no"
+        assert task.attempts == 1
+
+    def test_retry_loops_back_to_pending(self):
+        task = HiveTask(priority=1)
+        worker = HoneycombCell(coord=HexCoord(1, 1), role=CellRole.WORKER)
+        task.claim(worker)
+        task.fail("oh no")
+        task.retry()
+        assert task.state == TaskState.PENDING
+        assert task.error is None
+        assert task.assigned_to is None
+
+    def test_claim_from_running_raises(self):
+        # Claim is from PENDING; cannot claim a RUNNING task.
+        task = HiveTask(priority=1)
+        worker = HoneycombCell(coord=HexCoord(1, 1), role=CellRole.WORKER)
+        task.claim(worker)
+        with pytest.raises(IllegalStateTransition):
+            task.claim(worker)
+
+    def test_method_exception_leaves_state_unchanged(self):
+        # A method body that raises should leave state unchanged.
+        from state_machines.reified import transition
+
+        class BoomTask(HiveTask):
+            @transition(from_=TaskState.RUNNING, to=TaskState.COMPLETED)
+            def boom_complete(self) -> None:
+                raise RuntimeError("explode")
+
+        bt = BoomTask(priority=1)
+        bt.state = TaskState.RUNNING
+        with pytest.raises(RuntimeError, match="explode"):
+            bt.boom_complete()
+        assert bt.state == TaskState.RUNNING  # not COMPLETED
+
+
 # ─── QueenSuccession FSM ──────────────────────────────────────────────────────
 
 
