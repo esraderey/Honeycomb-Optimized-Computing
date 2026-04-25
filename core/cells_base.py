@@ -24,6 +24,14 @@ from collections.abc import Callable
 from enum import Enum, auto
 from typing import TYPE_CHECKING, Any
 
+# Absolute imports for state_machines: ``core`` is importable both as
+# ``core`` (top-level, used by tests) and as ``hoc.core`` (declared package,
+# used by external consumers). A relative ``from ..state_machines`` resolves
+# only in the second case. Absolute imports work in both because
+# ``state_machines/`` sits at the same level as ``core/`` on sys.path.
+from state_machines.base import HocStateMachine
+from state_machines.cell_fsm import build_cell_fsm
+
 from .events import Event, EventBus, EventType, get_event_bus
 from .grid_config import HoneycombConfig
 from .grid_geometry import HexCoord, HexDirection
@@ -96,6 +104,8 @@ class HoneycombCell:
         "_creation_time",
         "_error_count",
         "_event_bus",
+        # Phase 4: FSM that validates every state transition. One per cell.
+        "_fsm",
         "_last_activity",
         "_load",
         "_metadata",
@@ -140,6 +150,10 @@ class HoneycombCell:
             failure_threshold=self._config.max_consecutive_errors,
             recovery_timeout=self._config.circuit_breaker_recovery_s,
         )
+        # Phase 4: per-cell FSM. Initial state matches self._state above
+        # (both are CellState.EMPTY). _set_state below routes through this
+        # to validate every transition.
+        self._fsm = build_cell_fsm()
 
     # ─────────────────────────────────────────────────────────────────────────
     # GESTIÓN DE ESTADO (v3.0: método centralizado)
@@ -149,10 +163,21 @@ class HoneycombCell:
         """
         v3.0: Método interno para cambiar estado con emisión de eventos.
         DEBE llamarse dentro de un write_lock ya adquirido.
+
+        Phase 4: la transición se valida contra el FSM ``_fsm`` antes de
+        comprometer ``_state``. Una transición no documentada lanza
+        :class:`IllegalStateTransition`. Las transiciones idempotentes
+        (``old == new``) se silencian sin tocar el FSM, manteniendo el
+        contrato pre-Phase-4 de los callers.
         """
         old_state = self._state
         if old_state == new_state:
             return
+
+        # Phase 4: route through the FSM. If this raises, _state is not
+        # mutated, callbacks don't fire, and no event is published —
+        # consistent with the rollback semantics tramoya provides.
+        self._fsm.transition_to(new_state.name)
 
         self._state = new_state
         logger.debug(f"Cell {self.coord}: {old_state.name} → {new_state.name}")
@@ -222,6 +247,13 @@ class HoneycombCell:
     def circuit_breaker(self) -> CircuitBreaker:
         """v3.0: Acceso al circuit breaker."""
         return self._circuit_breaker
+
+    @property
+    def fsm(self) -> HocStateMachine:
+        """Phase 4: read-only access to the per-cell state machine for
+        introspection (history, visualization, observers). Mutation should
+        go through :attr:`state` setter."""
+        return self._fsm
 
     # ─────────────────────────────────────────────────────────────────────────
     # GESTIÓN DE VECINOS

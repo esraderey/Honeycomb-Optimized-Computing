@@ -126,7 +126,7 @@ class HiveTask:
     result: Any = field(compare=False, default=None)
     error: str | None = field(compare=False, default=None)
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if not self.task_id:
             self.task_id = f"task_{id(self)}_{time.time():.0f}"
 
@@ -278,7 +278,7 @@ class ForagerBehavior(BeeBehavior):
             priority_score = (5 - task.priority) / 5
 
             # Bonus por feromonas de éxito en la celda destino
-            pheromone_score = 0
+            pheromone_score: float = 0.0
             if task.target_cell:
                 pheromone_score = (
                     self.nectar.sense_pheromone(task.target_cell, PheromoneType.SUCCESS) * 0.5
@@ -486,7 +486,7 @@ class ScoutBehavior(BeeBehavior):
 
     def _explore_area(self, center: HexCoord) -> dict[str, Any]:
         """Explora un área y reporta hallazgos."""
-        report = {
+        report: dict[str, Any] = {
             "center": center,
             "cells_explored": 0,
             "total_load": 0,
@@ -632,7 +632,7 @@ class SwarmConfig:
 class LoadDistribution:
     """Estadísticas de distribución de carga."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.cell_loads: dict[HexCoord, float] = {}
         self.ring_loads: dict[int, float] = {}
         self.total_load: float = 0.0
@@ -657,7 +657,7 @@ class LoadDistribution:
             self.ring_loads[ring] += load
 
         # Promediar por ring
-        ring_counts = defaultdict(int)
+        ring_counts: defaultdict[int, int] = defaultdict(int)
         for coord in self.cell_loads:
             ring = coord.distance_to(HexCoord.origin())
             ring_counts[ring] += 1
@@ -735,7 +735,7 @@ class SwarmBalancer:
         Returns:
             Lista de (origen, destino, cantidad) para migrar
         """
-        suggestions = []
+        suggestions: list[tuple[HexCoord, HexCoord, int]] = []
 
         overloaded = self.find_overloaded_cells()
         underloaded = self.find_underloaded_cells()
@@ -795,7 +795,7 @@ class SwarmBalancer:
 
             # Buscar vecino con más carga
             best_neighbor = None
-            best_load = 0
+            best_load: float = 0.0
 
             for neighbor in cell.get_all_neighbors():
                 if (
@@ -933,7 +933,7 @@ class SwarmScheduler:
         priority: TaskPriority = TaskPriority.NORMAL,
         target_cell: HexCoord | None = None,
         timeout: float = 30.0,
-        callback: Callable | None = None,
+        callback: Callable[[Any], None] | None = None,
     ) -> HiveTask:
         """
         Envía una tarea al scheduler.
@@ -1104,7 +1104,7 @@ class SwarmScheduler:
 
     def get_stats(self) -> dict[str, Any]:
         """Obtiene estadísticas completas del scheduler."""
-        behavior_counts = defaultdict(int)
+        behavior_counts: defaultdict[str, int] = defaultdict(int)
         for behavior in self._behaviors.values():
             behavior_counts[type(behavior).__name__] += 1
 

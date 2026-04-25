@@ -56,6 +56,7 @@ from enum import Enum, auto
 from typing import (
     Any,
     TypeVar,
+    cast,
 )
 
 import mscs as _mscs
@@ -148,12 +149,15 @@ class PheromoneDeposit:
         no inmutabilidad de valor.
         """
         src = (self.source.q, self.source.r) if self.source is not None else None
-        return _mscs.dumps(
-            {
-                "kind": "pheromone",
-                "ptype": self.ptype.value,
-                "source": src,
-            }
+        return cast(
+            bytes,
+            _mscs.dumps(
+                {
+                    "kind": "pheromone",
+                    "ptype": self.ptype.value,
+                    "source": src,
+                }
+            ),
         )
 
     def sign(self, key: bytes | None = None) -> PheromoneDeposit:
@@ -271,7 +275,7 @@ class PheromoneTrail:
         ptype: PheromoneType,
         intensity: float,
         source: HexCoord | None = None,
-        metadata: dict | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> float:
         """
         Deposita feromona en una coordenada.
@@ -477,7 +481,7 @@ class PheromoneTrail:
         spread_per_neighbor = diffusion_rate / 6.0
         with self._lock:
             new_deposits: list[
-                tuple[HexCoord, PheromoneType, float, HexCoord | None, dict | None]
+                tuple[HexCoord, PheromoneType, float, HexCoord | None, dict[str, Any] | None]
             ] = []
             for coord, deposits in self._deposits.items():
                 for ptype, deposit in list(deposits.items()):
@@ -539,7 +543,7 @@ class PheromoneTrail:
                 d.intensity for deposits in self._deposits.values() for d in deposits.values()
             )
 
-            by_type = defaultdict(float)
+            by_type: defaultdict[str, float] = defaultdict(float)
             for deposits in self._deposits.values():
                 for ptype, deposit in deposits.items():
                     by_type[ptype.name] += deposit.intensity
@@ -622,15 +626,18 @@ class DanceMessage:
 
     def _canonical_payload(self) -> bytes:
         """Bytes estables para HMAC. Excluye ``quality`` y ``ttl`` mutables."""
-        return _mscs.dumps(
-            {
-                "kind": "dance",
-                "source": (self.source.q, self.source.r),
-                "direction": self.direction.value,
-                "distance": self.distance,
-                "resource_type": self.resource_type,
-                "timestamp": round(self.timestamp, 6),
-            }
+        return cast(
+            bytes,
+            _mscs.dumps(
+                {
+                    "kind": "dance",
+                    "source": (self.source.q, self.source.r),
+                    "direction": self.direction.value,
+                    "distance": self.distance,
+                    "resource_type": self.resource_type,
+                    "timestamp": round(self.timestamp, 6),
+                }
+            ),
         )
 
     def sign(self, key: bytes | None = None) -> DanceMessage:
@@ -707,7 +714,7 @@ class WaggleDance:
         distance: int,
         quality: float,
         resource_type: str = "generic",
-        metadata: dict | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> DanceMessage:
         """
         Inicia una danza en la coordenada especificada.
@@ -870,7 +877,7 @@ class WaggleDance:
         """Obtiene estadísticas del sistema de danza."""
         with self._lock:
             total_dances = sum(len(d) for d in self._active_dances.values())
-            by_type = defaultdict(int)
+            by_type: defaultdict[str, int] = defaultdict(int)
 
             for dances in self._active_dances.values():
                 for dance in dances:
@@ -933,16 +940,19 @@ class RoyalMessage:
         # params se incluye serializado canónicamente vía mscs para detectar
         # manipulación de argumentos (p.e. atacante cambia ``target_radius``
         # en un EVACUATE para ampliar el área evacuada).
-        return _mscs.dumps(
-            {
-                "kind": "royal",
-                "command": self.command.value,
-                "priority": self.priority,
-                "target": target,
-                "issuer": issuer,
-                "timestamp": round(self.timestamp, 6),
-                "params": self.params,
-            }
+        return cast(
+            bytes,
+            _mscs.dumps(
+                {
+                    "kind": "royal",
+                    "command": self.command.value,
+                    "priority": self.priority,
+                    "target": target,
+                    "issuer": issuer,
+                    "timestamp": round(self.timestamp, 6),
+                    "params": self.params,
+                }
+            ),
         )
 
     def sign(self, key: bytes | None = None) -> RoyalMessage:
@@ -1005,7 +1015,7 @@ class RoyalJelly:
         command: RoyalCommand,
         priority: int = 5,
         target: HexCoord | None = None,
-        params: dict | None = None,
+        params: dict[str, Any] | None = None,
         *,
         issuer: HexCoord | None = None,
     ) -> RoyalMessage:
@@ -1098,7 +1108,7 @@ class RoyalJelly:
             Lista de comandos aplicables
         """
         with self._lock:
-            applicable = []
+            applicable: list[RoyalMessage] = []
             for cmd in self._pending_commands:
                 if len(applicable) >= limit:
                     break
@@ -1140,7 +1150,7 @@ class RoyalJelly:
     def emergency_broadcast(
         self,
         message: str,
-        params: dict | None = None,
+        params: dict[str, Any] | None = None,
         *,
         issuer: HexCoord | None = None,
     ) -> None:
@@ -1170,10 +1180,13 @@ class RoyalJelly:
                 "pending_commands": len(self._pending_commands),
                 "subscribers": len(self._subscribers),
                 "history_size": len(self._command_history),
+                # B12 fix (Phase 4): ``cmd`` here iterates RoyalCommand enum
+                # members directly. The previous code referenced ``cmd.command``
+                # (an attribute the enum does not have) which would AttributeError
+                # at runtime; mypy strict on this file caught it. Use ``cmd``
+                # itself for both the dict key (its name) and the equality check.
                 "commands_by_type": {
-                    cmd.command.name: sum(
-                        1 for c in self._pending_commands if c.command == cmd.command
-                    )
+                    cmd.name: sum(1 for c in self._pending_commands if c.command == cmd)
                     for cmd in RoyalCommand
                 },
             }
@@ -1200,7 +1213,7 @@ class NectarChannel:
     name: str
     priority: NectarPriority
     buffer_size: int = 1000
-    _queue: deque = field(default_factory=lambda: deque(maxlen=1000))
+    _queue: deque[Any] = field(default_factory=lambda: deque(maxlen=1000))
 
 
 class NectarFlow:
@@ -1239,7 +1252,7 @@ class NectarFlow:
     # ─────────────────────────────────────────────────────────────────────────
 
     def deposit_pheromone(
-        self, coord: HexCoord, ptype: PheromoneType, intensity: float, **kwargs
+        self, coord: HexCoord, ptype: PheromoneType, intensity: float, **kwargs: Any
     ) -> float:
         """Deposita feromona en una coordenada."""
         return self._pheromones.deposit(coord, ptype, intensity, **kwargs)
@@ -1263,7 +1276,7 @@ class NectarFlow:
         distance: int,
         quality: float,
         resource_type: str = "generic",
-        **kwargs,
+        **kwargs: Any,
     ) -> DanceMessage:
         """Inicia una danza."""
         return self._dance.start_dance(
@@ -1283,7 +1296,7 @@ class NectarFlow:
         command: RoyalCommand,
         priority: int = 5,
         target: HexCoord | None = None,
-        params: dict | None = None,
+        params: dict[str, Any] | None = None,
         *,
         issuer: HexCoord | None = None,
     ) -> RoyalMessage:

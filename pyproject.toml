@@ -25,6 +25,12 @@ classifiers = [
 ]
 dependencies = [
     "numpy>=1.21.0",
+    # Phase 4: state-machine engine for the hoc.state_machines subpackage.
+    # See ADR-007 for the integration rationale; runtime dep because
+    # FSMs are constructed in production paths (HoneycombCell.state.setter,
+    # HiveTask transitions, QueenSuccession election, PheromoneDeposit decay,
+    # CellFailover migration). Pinned in requirements.txt for CI reproducibility.
+    "tramoya>=1.4.0",
 ]
 
 [project.optional-dependencies]
@@ -52,7 +58,7 @@ dev = [
 
 [tool.setuptools]
 package-dir = {hoc = "."}
-packages = ["hoc", "hoc.core", "hoc.metrics"]
+packages = ["hoc", "hoc.core", "hoc.metrics", "hoc.state_machines"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -67,7 +73,7 @@ addopts = "-v --tb=short --import-mode=importlib"
 pythonpath = ["."]
 # Don't descend into these dirs during collection. Prevents pytest from
 # discovering the package source and trying to treat files there as tests.
-norecursedirs = ["snapshot", "benchmarks", ".hypothesis", ".pytest_cache", "hoc.egg-info", "core", "metrics", "docs", ".git", "__pycache__"]
+norecursedirs = ["snapshot", "benchmarks", ".hypothesis", ".pytest_cache", "hoc.egg-info", "core", "metrics", "state_machines", "docs", ".git", "__pycache__"]
 
 [tool.coverage.run]
 source = ["."]
@@ -181,13 +187,35 @@ exclude = [
     # metrics.py was split into the metrics/ subpackage in Phase 3.3 (cont.)
     # — the legacy suppression follows the code to its new home.
     "^metrics/",
-    "^nectar\\.py$",
-    "^swarm\\.py$",
+    # Phase 4: nectar.py and swarm.py graduated from the legacy override.
+    # They are now type-checked by `mypy .` (see ADR-006 graduation
+    # schedule). The 29 errors that surfaced were annotated inline.
+    # Phase 4: state_machines/ is type-checked separately (see CI lint
+    # workflow). Excluded here because ``mypy .`` would scan it via
+    # sys.path search AND infer the cwd-name alias (``HOC.state_machines.*``)
+    # for the same files, blocking with a "Source file found twice" error.
+    # Strict mypy is preserved by passing the files explicitly:
+    # ``python -m mypy --explicit-package-bases state_machines/*.py``.
+    # The shell glob bypasses the directory-scan exclude. See ADR-007.
+    "^state_machines/",
 ]
 
 # External untyped deps — ignore missing stubs.
 [[tool.mypy.overrides]]
-module = ["mscs", "mscs.*", "hypothesis", "hypothesis.*", "numpy.*", "radon.*"]
+module = [
+    "mscs",
+    "mscs.*",
+    "hypothesis",
+    "hypothesis.*",
+    "numpy.*",
+    "radon.*",
+    # Phase 4: tramoya ships as a single .py with no PEP 561 stubs marker.
+    # Inline annotations exist in the source but mypy can't see them when
+    # follow_imports=silent and no_site_packages=true. Treat as untyped at
+    # the boundary; our own state_machines wrapper provides the typed surface.
+    "tramoya",
+    "tramoya.*",
+]
 ignore_missing_imports = true
 
 # Phase 3: strict mypy is the target, but core.py, metrics.py, bridge.py,
@@ -206,19 +234,31 @@ module = [
     "metrics",
     "metrics.*",
     "bridge",
-    "nectar",
-    "swarm",
     "hoc.core",
     "hoc.core.*",
     "hoc.metrics",
     "hoc.metrics.*",
     "hoc.bridge",
-    "hoc.nectar",
-    "hoc.swarm",
 ]
 # Full suppression for legacy modules during Phase 3. Future phases tighten
 # per-module by removing entries from this list (and then fixing the resulting
 # errors inline). See ADR-006.
+#
+# Phase 4 graduation: swarm and nectar were removed from this list. The
+# resulting 29 mypy errors (11 in swarm.py, 18 in nectar.py) are annotated
+# inline in those files.
+ignore_errors = true
+
+# Phase 4: state_machines/ is reachable as both ``state_machines.*`` (the
+# top-level alias used by tests and core/cells_base.py absolute import) and
+# ``HOC.state_machines.*`` (the package name mypy infers from the cwd
+# directory ``D:\HOC``). The same physical .py files satisfy both names, and
+# mypy reports "Source file found twice under different module names" if
+# both are scanned. Suppress the cwd-name alias so only the canonical
+# ``state_machines.*`` view is type-checked. The wrapper itself remains
+# strict-mypy via ``mypy state_machines/`` invoked directly in CI.
+[[tool.mypy.overrides]]
+module = ["HOC.state_machines", "HOC.state_machines.*"]
 ignore_errors = true
 
 # ─── Bandit (config here for completeness; CLI call in CI uses these) ─────────
