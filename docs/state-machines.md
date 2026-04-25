@@ -8,6 +8,10 @@ Each diagram below is exported from a `HocStateMachine` instance via `to_mermaid
 ## Index
 
 - [CellState](#cellstate)
+- [PheromoneDeposit](#pheromonedeposit)
+- [TaskLifecycle](#tasklifecycle)
+- [QueenSuccession](#queensuccession)
+- [FailoverFlow](#failoverflow)
 
 ## CellState
 
@@ -70,5 +74,67 @@ stateDiagram-v2
     RECOVERING --> ACTIVE : admin_force_active
     SEALED --> ACTIVE : admin_force_active
     SPAWNING --> ACTIVE : admin_force_active
+```
+
+## PheromoneDeposit
+
+- **States** (4): `DECAYING`, `DIFFUSING`, `EVAPORATED`, `FRESH`
+- **Initial state**: `FRESH`
+
+```mermaid
+stateDiagram-v2
+    FRESH --> DECAYING : aged_out [guarded]
+    DECAYING --> DIFFUSING : diffusion_started [guarded]
+    DIFFUSING --> DECAYING : diffusion_completed
+    DECAYING --> EVAPORATED : intensity_below_cleanup [guarded]
+    DIFFUSING --> EVAPORATED : intensity_below_cleanup_during_diffuse [guarded]
+```
+
+## TaskLifecycle
+
+- **States** (5): `CANCELLED`, `COMPLETED`, `FAILED`, `PENDING`, `RUNNING`
+- **Initial state**: `PENDING`
+
+```mermaid
+stateDiagram-v2
+    PENDING --> RUNNING : claimed
+    RUNNING --> COMPLETED : completed
+    RUNNING --> FAILED : failed
+    FAILED --> PENDING : retry
+    PENDING --> CANCELLED : cancelled_pending
+    RUNNING --> CANCELLED : cancelled_running
+```
+
+## QueenSuccession
+
+- **States** (6): `DETECTING`, `ELECTED`, `FAILED`, `NOMINATING`, `STABLE`, `VOTING`
+- **Initial state**: `STABLE`
+
+```mermaid
+stateDiagram-v2
+    STABLE --> DETECTING : heartbeat_lost [guarded]
+    DETECTING --> NOMINATING : failure_confirmed [guarded]
+    DETECTING --> STABLE : false_alarm
+    NOMINATING --> VOTING : candidates_identified [guarded]
+    NOMINATING --> FAILED : no_candidates
+    VOTING --> ELECTED : quorum_reached [guarded]
+    VOTING --> FAILED : tally_rejected
+    ELECTED --> STABLE : queen_promoted
+    FAILED --> STABLE : cooldown_expired
+```
+
+## FailoverFlow
+
+- **States** (5): `DEGRADED`, `HEALTHY`, `LOST`, `MIGRATING`, `RECOVERED`
+- **Initial state**: `HEALTHY`
+
+```mermaid
+stateDiagram-v2
+    HEALTHY --> DEGRADED : circuit_opened [guarded]
+    DEGRADED --> MIGRATING : strategy_picked [guarded]
+    MIGRATING --> RECOVERED : migration_succeeded [guarded]
+    MIGRATING --> LOST : migration_failed
+    LOST --> HEALTHY : cells_provisioned [guarded]
+    RECOVERED --> HEALTHY : stabilized [guarded]
 ```
 
