@@ -34,7 +34,6 @@ from state_machines.cell_fsm import (
     CELL_STATE_IDLE,
     CELL_STATE_RECOVERING,
     CELL_STATE_SEALED,
-    CELL_STATE_SPAWNING,
     build_cell_fsm,
 )
 from state_machines.failover_fsm import (
@@ -364,7 +363,8 @@ class TestVisualization:
 class TestCellStateFSMStandalone:
     def test_state_count(self):
         fsm = build_cell_fsm()
-        assert len(fsm.states) == 9
+        # Phase 4.3: SPAWNING and OVERLOADED removed; 7 states remain.
+        assert len(fsm.states) == 7
         assert fsm.states == set(ALL_CELL_STATES)
 
     def test_initial_is_empty(self):
@@ -378,12 +378,10 @@ class TestCellStateFSMStandalone:
 
     def test_dead_state_unreachable_via_lifecycle(self):
         fsm = build_cell_fsm()
-        # Dead states (SPAWNING, MIGRATING, SEALED, OVERLOADED) have no
-        # incoming transitions of any kind. transition_to should fail.
-        with pytest.raises(IllegalStateTransition) as excinfo:
-            fsm.transition_to(CELL_STATE_SPAWNING)
-        assert excinfo.value.reason == "no_edge"
-
+        # Phase 4.3: SPAWNING and OVERLOADED were removed from the enum.
+        # MIGRATING and SEALED remain as reserved (no incoming edges
+        # until Phase 5 wires CellFailover.migrate_cell + graceful
+        # shutdown). transition_to to a reserved state should fail.
         with pytest.raises(IllegalStateTransition) as excinfo:
             fsm.transition_to(CELL_STATE_SEALED)
         assert excinfo.value.reason == "no_edge"
@@ -421,10 +419,11 @@ class TestCellStateFSMWired:
 
     def test_illegal_transition_raises_and_does_not_mutate(self):
         cell = self._make_cell()
-        # SPAWNING is a dead state in the FSM (no incoming edges) — this
-        # is exactly the canary the FSM is supposed to catch.
+        # Phase 4.3: SPAWNING was removed; SEALED stays as reserved.
+        # SEALED has no incoming edges -- exactly the canary the FSM is
+        # supposed to catch.
         with pytest.raises(IllegalStateTransition) as excinfo:
-            cell.state = CellState.SPAWNING
+            cell.state = CellState.SEALED
         assert excinfo.value.reason == "no_edge"
         # State must not have changed.
         assert cell.state == CellState.EMPTY
@@ -572,15 +571,6 @@ class TestTaskFSMWired:
         assert excinfo.value.reason == "no_edge"
         # State did not mutate.
         assert task.state == TaskState.COMPLETED
-
-    def test_illegal_transition_assigned_dead_state_raises(self):
-        # ASSIGNED is in TaskState enum but not in the FSM (B12-bis).
-        # The wire-up must surface this as a runtime error.
-        task = HiveTask(priority=1)
-        with pytest.raises(IllegalStateTransition) as excinfo:
-            task.state = TaskState.ASSIGNED
-        assert excinfo.value.reason == "unknown_state"
-        assert task.state == TaskState.PENDING
 
     def test_idempotent_assignment_skips_fsm(self):
         # Assigning the same state is a no-op — FSM is not consulted,

@@ -8,6 +8,77 @@ y este proyecto adhiere a [Semantic Versioning](https://semver.org/lang/es/).
 
 ---
 
+## [1.4.3-phase04.3] — 2026-04-25
+
+**Cierre de Fase 4.3 — Dead enum cleanup (B12-bis + B12-ter resueltos
+parcialmente).** 733 tests pasando (-1 vs Phase 4.2: el test obsoleto
+`test_illegal_transition_assigned_dead_state_raises` fue eliminado).
+choreo reduce warnings de 2 a 1. Per-member discrimination: 3 enum
+members eliminados (`TaskState.ASSIGNED`, `CellState.SPAWNING`,
+`CellState.OVERLOADED`); 2 reservados para wire-up en Phase 5
+observability (`CellState.MIGRATING`, `CellState.SEALED`).
+Bandit/pip-audit/ruff/black/mypy todos limpios.
+
+Reporte completo: [snapshot/PHASE_04_3_CLOSURE.md](snapshot/PHASE_04_3_CLOSURE.md).
+
+### Removed
+
+- **`TaskState.ASSIGNED`** — declarado en swarm.py:90 desde Phase 1
+  pero ningún call-site lo asignaba. B12-bis resuelto.
+- **`CellState.SPAWNING`** — aspiracional, sin caller en producción.
+  Cells nacen `EMPTY → IDLE`, no via SPAWNING.
+- **`CellState.OVERLOADED`** — aspiracional, circuit breaker tiene
+  solo 2 estados (cerrado=ACTIVE, abierto=FAILED).
+- **Test `test_illegal_transition_assigned_dead_state_raises`** —
+  obsoleto tras la eliminación de ASSIGNED.
+
+### Reserved (deferred to Phase 5)
+
+- **`CellState.MIGRATING`** — wire-up planeado en
+  `CellFailover.migrate_cell` para observabilidad de migraciones
+  in-flight.
+- **`CellState.SEALED`** — wire-up planeado en nuevo `cell.seal()`
+  para graceful shutdown.
+
+Ambos reservados aparecen como warning `dead_state` en `choreo check`
+hasta que Phase 5 los wireé. ADR-010 documenta el commitment.
+
+### Updated
+
+- **`core/cells_base.py:CellState`** — 9 → 7 members (con docstring
+  documentando el cleanup).
+- **`swarm.py:TaskState`** — 6 → 5 members.
+- **`state_machines/cell_fsm.py`** — `CELL_STATE_SPAWNING` y
+  `CELL_STATE_OVERLOADED` constants removidas; `ALL_CELL_STATES`
+  reducida a 7.
+- **`metrics/visualization.py`** — entries `SPAWNING` removidos de
+  `STATE_CHARS` y `colors`.
+- **Tests** — `test_state_count` (`9` → `7`),
+  `test_dead_state_unreachable_via_lifecycle` (usa SEALED en lugar de
+  SPAWNING), `test_illegal_transition_raises_and_does_not_mutate`
+  (idem), `test_render_includes_state_count_and_initial` (`(9)` →
+  `(7)`), `test_hoc_findings_exact` (assertions actualizadas).
+- **`docs/state-machines.md`** — regenerado (CellState diagram con 7
+  nodes en lugar de 9).
+
+### Documentation
+
+- **ADR-010** — Dead enum-member cleanup: eliminate vs reserve
+  rationale (per-member).
+
+### choreo report — Phase 4.2 vs 4.3
+
+| | Phase 4.2 | Phase 4.3 |
+|---|---|---|
+| Errors | 0 | 0 |
+| Warnings | 2 | **1** |
+| Info | 3 | 3 |
+
+El warning restante (CellState dead: MIGRATING + SEALED) es
+**intencional** — reservado, no bug.
+
+---
+
 ## [1.4.2-phase04.2] — 2026-04-25
 
 **Cierre de Fase 4.2 — `choreo` v0.2: reified transitions + auto-derive
@@ -340,6 +411,7 @@ Reporte completo: [snapshot/PHASE_04_CLOSURE.md](snapshot/PHASE_04_CLOSURE.md).
 - radon CC: 11 funciones >10 (todas legacy, sin cambios estructurales)
 - pytest: **663/663 passing**
 
+[1.4.3-phase04.3]: https://github.com/esraderey/Honeycomb-Optimized-Computing/releases/tag/v1.4.3-phase04.3
 [1.4.2-phase04.2]: https://github.com/esraderey/Honeycomb-Optimized-Computing/releases/tag/v1.4.2-phase04.2
 [1.4.1-phase04.1]: https://github.com/esraderey/Honeycomb-Optimized-Computing/releases/tag/v1.4.1-phase04.1
 [1.4.0-phase04]: https://github.com/esraderey/Honeycomb-Optimized-Computing/releases/tag/v1.4.0-phase04
