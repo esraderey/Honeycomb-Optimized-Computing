@@ -8,6 +8,172 @@ y este proyecto adhiere a [Semantic Versioning](https://semver.org/lang/es/).
 
 ---
 
+## [1.4.0-phase04] — 2026-04-24
+
+**Cierre de Fase 4 — Configuración & Developer Experience (FSM integration).**
+663 tests pasando (+81: 57 unit + 16 hypothesis property + 8 mermaid
+export), cobertura global **76.34 %** (+0.61 pts vs Phase 3). Cinco state
+machines formales para HOC (`CellState`, `PheromoneDeposit`,
+`TaskLifecycle`, `QueenSuccession`, `FailoverFlow`), una **wired into
+production** (`HoneycombCell.state.setter`) y cuatro declarativas-only
+(documentación + Mermaid + property tests). `swarm.py` y `nectar.py`
+**graduados** del override mypy de Phase 3 (29 anotaciones inline). Bug
+latente **B12** descubierto y corregido (`RoyalJelly.get_stats` referenciaba
+atributo inexistente en enum `RoyalCommand`). Bandit sigue 0/0/0; pip-audit
+limpio.
+
+Reporte completo: [snapshot/PHASE_04_CLOSURE.md](snapshot/PHASE_04_CLOSURE.md).
+
+### Added
+
+#### Runtime dependency
+- `tramoya==1.4.0` pinneado en `requirements.txt` y declarado en
+  `pyproject.toml [project].dependencies`. Provee el motor de state
+  machines (~300 LOC, zero deps, MIT). Aislado tras
+  `hoc.state_machines.HocStateMachine` — única importación de tramoya
+  en todo el repo, mismo patrón que Phase 2 con `mscs` en `hoc.security`.
+  Ver [ADR-007](docs/adr/ADR-007-tramoya-fsm-integration.md).
+
+#### `hoc.state_machines` subpaquete
+- **`base.py`** — `HocStateMachine`, `HocTransition`,
+  `IllegalStateTransition`. API destination-driven (`transition_to(target)`)
+  preserva el contrato pre-Phase-4 de `obj.state = X`; trigger-driven
+  (`trigger(name)`) está disponible para callers que prefieren eventos.
+- **`cell_fsm.py`** (wired) — 9 estados (mismos que `CellState` enum),
+  14 transiciones (9 lifecycle + 5 admin/wildcard).
+- **`pheromone_fsm.py`** (declarativo) — 4 estados
+  (FRESH/DECAYING/DIFFUSING/EVAPORATED), 5 transiciones con guards.
+- **`task_fsm.py`** (declarativo) — 5 estados (PENDING/RUNNING/
+  COMPLETED/FAILED/CANCELLED), 6 transiciones. `ASSIGNED` declarado en
+  `TaskState` enum pero **nunca asignado** (B12-bis, deferred).
+- **`succession_fsm.py`** (declarativo) — 6 estados (STABLE/DETECTING/
+  NOMINATING/VOTING/ELECTED/FAILED), 9 transiciones modelando heartbeat-
+  loss → confirm → nominate → vote → elect/fail → cooldown. Guards
+  re-statement de los chequeos `_tally_votes` (quorum + signatures + term).
+- **`failover_fsm.py`** (declarativo) — 5 estados (HEALTHY/DEGRADED/
+  MIGRATING/RECOVERED/LOST), 6 transiciones; undo en MIGRATING modela
+  el rollback de migración.
+
+#### CellState FSM wired
+- `core/cells_base.py:HoneycombCell` ahora instancia un `HocStateMachine`
+  por celda en `__init__`. `state.setter` y `_set_state` enrutan toda
+  transición por la FSM antes de mutar `_state`. Transiciones a estados
+  muertos (`SPAWNING`, `MIGRATING`, `SEALED`, `OVERLOADED` — B12-ter,
+  deferred) levantan `IllegalStateTransition(reason="no_edge")`.
+- Idempotencia preservada: `cell.state = current_state` sigue siendo
+  no-op (sin invocar la FSM).
+
+#### Documentación
+- `docs/state-machines.md` — auto-generado por
+  `scripts/generate_state_machines_md.py`. Contiene índice + 5
+  diagramas Mermaid `stateDiagram-v2`, output determinista byte-a-byte.
+- [ADR-007](docs/adr/ADR-007-tramoya-fsm-integration.md) — rationale de
+  la integración tramoya, la decisión "1 wired + 4 declarative", y el
+  hack del exclude+explicit-package-bases para mypy.
+- [ADR-006](docs/adr/ADR-006-mypy-legacy-suppression.md) actualizado con
+  el outcome de la graduación Phase 4 (`swarm.py` + `nectar.py` removidos
+  del override).
+
+#### Tests
+- `tests/test_state_machines.py` (57 tests) — wrapper API + per-FSM
+  legal/illegal transitions + CellState wiring smoke (transiciones
+  ilegales rechazadas sin mutar la celda).
+- `tests/test_state_machines_property.py` (16 tests, Hypothesis) —
+  reachability random walks, terminal-state invariantes, no-orphan-states.
+- `tests/test_mermaid_export.py` (8 tests) — determinism, FSM coverage,
+  drift detector contra `docs/state-machines.md` (mismo contrato que
+  el `--check` de CI).
+
+#### CI
+- `.github/workflows/lint.yml` `mypy` job extendido con step
+  `python -m mypy --explicit-package-bases state_machines/*.py` (strict
+  preservado pese al exclude global del directorio).
+- Nuevo job **`state-machines-doc`** corre
+  `python scripts/generate_state_machines_md.py --check` — falla si la
+  doc auto-generada drifteó de las specs FSM.
+
+### Changed
+
+- `pyproject.toml [tool.mypy].exclude` += `^state_machines/` con
+  comentario explicando el conflict cwd-name vs. sys.path-search y la
+  invocación correcta para CI/local.
+- `pyproject.toml [[tool.mypy.overrides]]` para módulos legacy: `nectar`
+  y `swarm` **removidos** (graduación ADR-006).
+- `pyproject.toml [tool.setuptools].packages` += `hoc.state_machines`.
+- `__init__.py` no tocado — `from hoc import ...` sigue dando exactamente
+  los mismos símbolos. (Mantenido el invariante cardinal de Phase 3.)
+
+### Fixed
+
+#### B12 — `RoyalJelly.get_stats` AttributeError latente
+- `nectar.py:~1174` referenciaba `cmd.command` sobre miembros del enum
+  `RoyalCommand`. Llamadas a `RoyalJelly.get_stats()` habrían arrojado
+  `AttributeError` en runtime (ningún test lo cubría). Mismo patrón que
+  **B9** (Phase 1 metrics.py) y **B11** (Phase 3 resilience.py): mypy
+  strict captura el lookup.
+- **Fix**: `cmd.command.name` → `cmd.name`; `c.command == cmd.command`
+  → `c.command == cmd`. Comportamiento original preservado.
+
+### Annotated (29 errores mypy → 0)
+
+#### `swarm.py` (11 errores)
+- `HiveTask.__post_init__` retorna `-> None`.
+- `LoadDistribution.__init__` retorna `-> None`.
+- `pheromone_score: float = 0.0` (era inferido `int`, asignado `float`).
+- `_explore_area` returna `dict[str, Any]` con anotación explícita del
+  literal.
+- `ring_counts: defaultdict[int, int]`, `behavior_counts:
+  defaultdict[str, int]`, `suggestions: list[tuple[HexCoord, HexCoord, int]]`,
+  `best_load: float = 0.0`.
+- `submit_task(callback: Callable[[Any], None] | None)` (era bare
+  `Callable`).
+
+#### `nectar.py` (18 errores)
+- `_canonical_payload` (3 ocurrencias en PheromoneDeposit, DanceMessage,
+  RoyalMessage): `cast(bytes, _mscs.dumps(...))`.
+- `dict | None` parámetros (6 ocurrencias) widened a `dict[str, Any] | None`.
+- `defaultdict` generics: `defaultdict[str, float]`, `defaultdict[str, int]`.
+- `applicable: list[RoyalMessage]`, `_queue: deque[Any]`.
+- `deposit_pheromone`/`start_dance`: `**kwargs: Any`.
+- `new_deposits` inner tuple: `dict[str, Any] | None`.
+- B12 fix (ver arriba).
+
+### Deferred to Phase 5+
+
+- **4.8 Config system** — `from_yaml/from_env/from_toml` (priorización
+  del usuario; ningún path crítico lo necesita en Phase 4).
+- **4.9 CLI `hoc-cli`** — `grid/state-machines/doctor` subcommands
+  (priorización del usuario).
+- **4.11 Split swarm/nectar** — la graduación mypy ya hizo el trabajo
+  difícil; el split puro queda más natural cuando `resilience.py` también
+  entra a Phase 5.
+- **Wire-up real de las 4 FSMs declarativas** — junto con observability
+  (Phase 5) o split de resilience (Phase 5).
+- **B12-bis y B12-ter (dead states)** — `TaskState.ASSIGNED` y
+  `CellState.{SPAWNING,MIGRATING,SEALED,OVERLOADED}` nunca asignados;
+  decisión (eliminar vs. wire-up del callsite faltante) en Phase 5.
+- **Cobertura objetivo 78%** — alcanzamos 76.34%; el resto requiere
+  boost en `nectar.py` (73%) y `bridge.py` (56%).
+- **Benchmark baseline reproducible** — Phase 3 difirió bench (Gap 4 de
+  Phase 3 closure); Phase 4 captura `snapshot/bench_phase04.json` pero
+  no puede medir overhead vs. Phase 3. Phase 5 captura baseline + diff.
+
+### Audits
+
+- ruff: 0 errores (toda la base)
+- black: 0 archivos a reformatear
+- mypy `python -m mypy .`: 0 errores (security/memory/resilience/swarm/
+  nectar/__init__ + bridge/core/metrics suprimidos por ADR-006)
+- mypy `python -m mypy --explicit-package-bases state_machines/*.py`: 0
+- bandit: **0 / 0 / 0** (HIGH / MEDIUM / LOW), 9,896 LOC scanned, 31 archivos
+- pip-audit (runtime + dev): clean
+- radon CC: 11 funciones >10 (todas legacy, sin cambios estructurales)
+- pytest: **663/663 passing**
+
+[1.4.0-phase04]: https://github.com/esraderey/Honeycomb-Optimized-Computing/releases/tag/v1.4.0-phase04
+
+---
+
 ## [1.3.0-phase03] — 2026-04-24
 
 **Cierre de Fase 3 — Tooling, CI/CD & Code Quality.** 582 tests pasando

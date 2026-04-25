@@ -215,10 +215,21 @@ bridge 886) — splits planificados para phases 4-6.
 
 ---
 
-## FASE 4 — Configuración & Developer Experience
+## FASE 4 — Configuración & Developer Experience — **CERRADA** 🟢
 **Objetivo**: HOC usable sin necesidad de leer código fuente. **Integración profunda de [tramoya](https://pypi.org/project/tramoya/)** para state machines formales.
 **Duración**: 3-4 semanas
-**Tag al cerrar**: `v1.4.0-phase04`
+**Tag al cerrar**: `v1.4.0-phase04` — cierre 2026-04-24
+
+**Resultado**: 663 tests pasando (+81 vs. Phase 3), cobertura **76.34 %**
+(+0.61 pts), **5 FSMs formalizadas** (CellState wired, 4 declarativas),
+`docs/state-machines.md` auto-generado con drift detector en CI,
+`swarm.py` + `nectar.py` graduados de mypy override (29 anotaciones), bug
+**B12** (RoyalJelly.get_stats AttributeError latente) corregido. Bandit
+0/0/0 mantenido. Configuración externa (4.8) y CLI (4.9) **diferidos a
+Phase 5+** por priorización del usuario; las 4 FSMs declarativas (gap
+de wire-up real) también diferidas. Cierre completo:
+[snapshot/PHASE_04_CLOSURE.md](snapshot/PHASE_04_CLOSURE.md). Decisión de
+arquitectura: [ADR-007](docs/adr/ADR-007-tramoya-fsm-integration.md).
 
 ### Integración de tramoya
 **Por qué tramoya**: librería propia, MIT, zero deps, FSM con guards/hooks, undo, viz Mermaid/Graphviz.
