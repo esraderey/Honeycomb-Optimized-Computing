@@ -103,6 +103,8 @@ stateDiagram-v2
     FAILED --> PENDING : retry
     PENDING --> CANCELLED : cancelled_pending
     RUNNING --> CANCELLED : cancelled_running
+    PENDING --> COMPLETED : force_completed_from_pending
+    PENDING --> FAILED : force_failed_from_pending
 ```
 
 ## QueenSuccession

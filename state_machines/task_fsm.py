@@ -1,6 +1,6 @@
 """
-TaskLifecycle FSM (Phase 4.4a)
-==============================
+TaskLifecycle FSM (Phase 4.4a, wired in Phase 4.1)
+==================================================
 
 Lifecycle of a :class:`hoc.swarm.HiveTask`:
 
@@ -14,26 +14,35 @@ Lifecycle of a :class:`hoc.swarm.HiveTask`:
                                                            │
        ◄───────────────────────────────────────────────────┘
 
-Why declarative-only
---------------------
+Wired via ``HiveTask.__setattr__`` (Phase 4.1)
+----------------------------------------------
 
-Same pattern as :mod:`hoc.state_machines.pheromone_fsm`. ``HiveTask`` is a
-``@dataclass(order=True)`` whose ``state`` field is mutated directly from
-~15 call-sites in :mod:`hoc.swarm` and many more in
-``tests/test_swarm.py`` and ``tests/test_heavy.py``. Wiring the FSM in
-through ``__setattr__`` would force every test that injects task state
-for fault simulation through the FSM, requiring either:
+Phase 4 shipped this FSM as declarative-only. Phase 4.1 wires it into
+``HiveTask.__setattr__`` so every ``task.state = X`` mutation routes
+through :meth:`HocStateMachine.transition_to`. Illegal transitions (e.g.
+``COMPLETED → RUNNING``, ``FAILED → COMPLETED`` without going through the
+retry path) raise :class:`IllegalStateTransition`.
 
-- relaxing the FSM with wildcard admin transitions to every state (which
-  drains the FSM of validation value), or
-- rewriting tests to use a ``transition_state`` helper (which conflates
-  Phase 4 scope with refactoring tests authored in Phase 1-3).
+Two explicit test-fixture edges
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Either path delivers less value than a declarative FSM does:
-``docs/state-machines.md`` documents the lifecycle for new contributors,
-``tests/test_state_machines.py`` validates the graph (e.g. terminal-state
-properties), and the trigger names map cleanly onto the call-sites in
-swarm.py for future wire-up. Phase 4 closure documents this explicitly.
+``tests/test_swarm.py`` uses five ``task.state = TaskState.{COMPLETED,
+FAILED}`` assignments on a freshly-submitted task (still ``PENDING``) as
+fault-injection shortcuts: instead of running the scheduler's
+``tick()`` loop to drive a task to terminal state, the test forces the
+state directly. To accommodate these without relaxing the FSM with
+wildcards, two explicit trigger edges are declared:
+
+- ``force_completed_from_pending`` — used by
+  ``test_cancel_completed_task_fails`` and the three B2.5 index-leak
+  tests (lines 451, 504, 505, 537 of ``tests/test_swarm.py``).
+- ``force_failed_from_pending`` — used by
+  ``test_b2_5_task_index_cleaned_after_failed`` (line 522).
+
+These edges are **not** reachable from production call-sites in
+``swarm.py`` — the scheduler always goes through ``PENDING → RUNNING``
+before any terminal transition. They are documented here so a future
+reader understands why the FSM permits them.
 
 ASSIGNED is dead state (B12)
 ----------------------------
@@ -105,10 +114,13 @@ is **not** terminal because the retry path can transition back to
 
 def build_task_fsm() -> HocStateMachine:
     """
-    Build the TaskLifecycle FSM. Used by
-    :mod:`scripts.generate_state_machines_md` and the property tests.
-    Production code in ``swarm.py`` does not (yet) call ``transition_to``
-    on this FSM — see the module docstring for why.
+    Build the TaskLifecycle FSM. Wired into ``HiveTask.__setattr__`` in
+    Phase 4.1 — every ``task.state = X`` mutation routes through
+    :meth:`HocStateMachine.transition_to`.
+
+    Used at construction time by ``HiveTask.__post_init__`` (one FSM per
+    task). Also used by :mod:`scripts.generate_state_machines_md` and the
+    property tests.
     """
     transitions: list[HocTransition] = [
         # ── Lifecycle ──────────────────────────────────────────────────
@@ -132,6 +144,12 @@ def build_task_fsm() -> HocStateMachine:
         # task CANCELLED if shutdown beat the worker. test_swarm.py:444,
         # 451 (force-completed path), 566 (CANCELLED race).
         HocTransition(TASK_RUNNING, TASK_CANCELLED, trigger="cancelled_running"),
+        # ── Test-fixture edges (see module docstring) ──────────────────
+        # Five test-sites assign terminal states to freshly-submitted
+        # PENDING tasks to shortcut the scheduler loop. No production
+        # path exercises these.
+        HocTransition(TASK_PENDING, TASK_COMPLETED, trigger="force_completed_from_pending"),
+        HocTransition(TASK_PENDING, TASK_FAILED, trigger="force_failed_from_pending"),
     ]
 
     return HocStateMachine(

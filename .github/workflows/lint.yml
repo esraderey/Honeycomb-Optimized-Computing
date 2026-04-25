@@ -110,3 +110,33 @@ jobs:
       # from what is on disk. Same check tests/test_mermaid_export.py
       # runs locally via pytest. See ADR-007.
       - run: python scripts/generate_state_machines_md.py --check
+
+  choreo-static-check:
+    name: choreo static FSM check
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: hoc
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: hoc
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: hoc/pyproject.toml
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+      # Phase 4.1: choreo runs static AST analysis comparing observed
+      # `obj.state = X` mutations against declared FSM specs in
+      # state_machines/. Errors (undocumented mutations) break the
+      # build; warnings (B12-bis/B12-ter dead states known from the
+      # Phase 4 closure) are reported but do not. After those bugs
+      # are resolved in Phase 5+, switch to `--strict` to enforce
+      # zero warnings as well. See ADR-008.
+      - run: python -m choreo check
+      # Sanity check: JSON output is valid JSON.
+      - run: python -m choreo check --json | python -m json.tool > /dev/null
