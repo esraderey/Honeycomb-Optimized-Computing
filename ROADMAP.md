@@ -348,12 +348,38 @@ Decisión de arquitectura:
 [ADR-009](docs/adr/ADR-009-reified-transitions-and-auto-derive.md).
 
 ### Diferido a Phase 5+
-- B12-bis y B12-ter (dead enum members) — sigue documentado como
-  warning, no resuelto.
 - Walker patterns adicionales (`attrs.evolve`, RHS computado, etc.).
-- `--strict` CI flip espera resolución de B12-bis/ter.
+- `--strict` CI flip espera el wire-up de los reservados (Phase 5).
 - Auto-derive con CFG analysis (sources reales) — research-grade,
   deferred indefinidamente.
+
+---
+
+## FASE 4.3 — Dead enum cleanup — **CERRADA** 🟢
+**Objetivo**: Mini-fase de cleanup que aplica per-member la
+discriminación "eliminar vs reservar" sobre los dead enum members
+detectados por choreo en Phase 4.1/4.2.
+**Duración**: 1 día (~2h)
+**Tag al cerrar**: `v1.4.3-phase04.3` — cierre 2026-04-25
+
+**Resultado**: choreo reduce warnings de 2 a 1.
+
+- **Eliminados**: `TaskState.ASSIGNED`, `CellState.SPAWNING`,
+  `CellState.OVERLOADED` (sin caso de uso real).
+- **Reservados (Phase 5)**: `CellState.MIGRATING` (wire-up en
+  `CellFailover.migrate_cell` para observabilidad), `CellState.SEALED`
+  (wire-up para graceful shutdown).
+- 733 tests pasando (-1 vs Phase 4.2: test obsoleto B12-bis eliminado).
+- ruff/black/mypy/bandit/pip-audit limpios.
+
+Cierre completo: [snapshot/PHASE_04_3_CLOSURE.md](snapshot/PHASE_04_3_CLOSURE.md).
+Decisión de arquitectura: [ADR-010](docs/adr/ADR-010-dead-enum-cleanup.md).
+
+### Pendiente para Phase 5
+- Wire-up de `CellState.MIGRATING` y `CellState.SEALED`.
+- Wire-up de las 3 FSMs declarative-only (Pheromone, Succession,
+  Failover).
+- Tras lo anterior, flippear `--strict` en el job CI choreo.
 
 ---
 

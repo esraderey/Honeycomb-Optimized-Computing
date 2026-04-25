@@ -108,6 +108,7 @@ class TestRenderEdgeCases:
 
     def test_render_includes_state_count_and_initial(self):
         out = _render_fresh()
-        # Picking CellState as the canary — it has 9 states.
-        assert "**States** (9)" in out
+        # Picking CellState as the canary -- after Phase 4.3 cleanup it
+        # has 7 states (SPAWNING and OVERLOADED removed).
+        assert "**States** (7)" in out
         assert "**Initial state**: `EMPTY`" in out

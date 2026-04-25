@@ -37,6 +37,7 @@ fully explained by the code itself.
 | [ADR-007](ADR-007-tramoya-fsm-integration.md) | Tramoya as the FSM engine, with one wired + four declarative state machines | Accepted | Phase 4 |
 | [ADR-008](ADR-008-choreo-static-fsm-verification.md) | `choreo` — static FSM verification, complementary to runtime wire-up | Accepted | Phase 4.1 |
 | [ADR-009](ADR-009-reified-transitions-and-auto-derive.md) | Reified transitions + auto-derive — `choreo` v0.2 | Accepted | Phase 4.2 |
+| [ADR-010](ADR-010-dead-enum-cleanup.md) | Dead enum-member cleanup — eliminate vs reserve | Accepted | Phase 4.3 |
 
 ## Template
 

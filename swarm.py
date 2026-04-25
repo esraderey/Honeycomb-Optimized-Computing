@@ -85,10 +85,17 @@ T = TypeVar("T")
 
 
 class TaskState(Enum):
-    """Estado de una tarea."""
+    """Estado de una tarea.
+
+    Phase 4.3: ``ASSIGNED`` was removed (B12-bis cleanup). It was
+    declared in Phase 1 to model a ``PENDING -> ASSIGNED -> RUNNING``
+    two-step but no production path ever assigned it -- workers go
+    straight ``PENDING -> RUNNING`` when they claim a task. If Phase 5+
+    needs visibility into the "claimed but not yet executing" interval
+    (e.g. for metrics), reintroduce with a real wire-up.
+    """
 
     PENDING = auto()  # Esperando ser tomada
-    ASSIGNED = auto()  # Asignada a un worker
     RUNNING = auto()  # En ejecución
     COMPLETED = auto()  # Completada exitosamente
     FAILED = auto()  # Fallida

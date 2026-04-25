@@ -57,17 +57,23 @@ __all__ = [
 
 
 class CellState(Enum):
-    """Estado de una celda del panal."""
+    """Estado de una celda del panal.
+
+    Phase 4.3: ``SPAWNING`` and ``OVERLOADED`` were removed (B12-ter
+    cleanup). Both were aspirational states that no production path ever
+    assigned. ``MIGRATING`` and ``SEALED`` are kept as **reserved** —
+    Phase 5 will wire them up (MIGRATING during ``CellFailover.migrate_cell``
+    for observability; SEALED for graceful shutdown). Until then
+    ``choreo`` continues to flag them as ``dead_state`` warnings.
+    """
 
     EMPTY = auto()
     ACTIVE = auto()
     IDLE = auto()
-    SPAWNING = auto()
-    MIGRATING = auto()
+    MIGRATING = auto()  # reserved: Phase 5 wire-up in CellFailover.migrate_cell
     FAILED = auto()
     RECOVERING = auto()
-    SEALED = auto()
-    OVERLOADED = auto()
+    SEALED = auto()  # reserved: Phase 5 wire-up for graceful shutdown
 
 
 class CellRole(Enum):

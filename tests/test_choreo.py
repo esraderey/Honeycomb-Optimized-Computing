@@ -781,11 +781,18 @@ class TestCli:
 
 class TestHocIntegration:
     """End-to-end check that choreo, run against the HOC repo it lives in,
-    produces exactly the 5 findings documented in the Phase 4.1 closure:
+    produces exactly the findings documented in the current closure.
 
-    - 4 dead states in CellState (B12-ter)
-    - 1 enum extra in TaskLifecycle (B12-bis: ASSIGNED)
-    - 3 declarative-only FSMs (Pheromone, Succession, Failover)
+    Phase 4.3 cleanup status:
+
+    - **0 errors** -- no undocumented mutations.
+    - **1 warning** (down from 2 in Phase 4.2):
+        - 2 dead states in CellState (MIGRATING, SEALED) -- both
+          reserved for Phase 5 wire-up. SPAWNING and OVERLOADED were
+          removed; ASSIGNED was removed from TaskState (so no
+          enum_extra_state finding anymore).
+    - **3 info**: PheromoneDeposit / QueenSuccession / FailoverFlow
+      remain declarative-only until Phase 5.
     """
 
     def test_hoc_smoke(self):
@@ -813,23 +820,30 @@ class TestHocIntegration:
             by_kind.setdefault(f.kind, []).append(f)
 
         # Expected structure (exact counts, validated against the Phase
-        # 4.1 wire-up state of HOC).
+        # 4.3 wire-up state of HOC).
         assert (
             "undocumented_mutation" not in by_kind
         ), f"Unexpected undocumented mutations: {by_kind.get('undocumented_mutation')}"
 
         assert (
             len(by_kind.get("dead_state", [])) == 1
-        ), "Expected exactly one dead_state finding (CellState's 4 dead states reported as a single batch)"
+        ), "Expected exactly one dead_state finding (CellState reserved members reported as a single batch)"
         cell_dead = by_kind["dead_state"][0]
         assert cell_dead.fsm == "CellState"
-        for dead in ("MIGRATING", "OVERLOADED", "SEALED", "SPAWNING"):
+        # Phase 4.3 reduced the dead set to only MIGRATING and SEALED.
+        for dead in ("MIGRATING", "SEALED"):
             assert dead in cell_dead.message
+        for removed in ("SPAWNING", "OVERLOADED"):
+            assert (
+                removed not in cell_dead.message
+            ), f"{removed} should have been removed in Phase 4.3"
 
-        assert len(by_kind.get("enum_extra_state", [])) == 1
-        task_extra = by_kind["enum_extra_state"][0]
-        assert task_extra.fsm == "TaskLifecycle"
-        assert "ASSIGNED" in task_extra.message
+        # Phase 4.3 removed TaskState.ASSIGNED entirely, so the
+        # enum_extra_state finding from Phase 4.1/4.2 should be gone.
+        assert "enum_extra_state" not in by_kind, (
+            f"Phase 4.3 should have eliminated enum_extra_state findings: "
+            f"{by_kind.get('enum_extra_state')}"
+        )
 
         decl = by_kind.get("declarative_only", [])
         decl_names = {f.fsm for f in decl}

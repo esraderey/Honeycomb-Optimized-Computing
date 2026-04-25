@@ -67,23 +67,23 @@ from .base import WILDCARD, HocStateMachine, HocTransition
 CELL_STATE_EMPTY = "EMPTY"
 CELL_STATE_ACTIVE = "ACTIVE"
 CELL_STATE_IDLE = "IDLE"
-CELL_STATE_SPAWNING = "SPAWNING"
+# Reserved (B12-ter survivors): MIGRATING and SEALED stay in the FSM
+# even though no current call-site targets them. Phase 5 wire-up:
+# MIGRATING during CellFailover.migrate_cell, SEALED for graceful
+# shutdown.
 CELL_STATE_MIGRATING = "MIGRATING"
 CELL_STATE_FAILED = "FAILED"
 CELL_STATE_RECOVERING = "RECOVERING"
 CELL_STATE_SEALED = "SEALED"
-CELL_STATE_OVERLOADED = "OVERLOADED"
 
 ALL_CELL_STATES: tuple[str, ...] = (
     CELL_STATE_EMPTY,
     CELL_STATE_ACTIVE,
     CELL_STATE_IDLE,
-    CELL_STATE_SPAWNING,
     CELL_STATE_MIGRATING,
     CELL_STATE_FAILED,
     CELL_STATE_RECOVERING,
     CELL_STATE_SEALED,
-    CELL_STATE_OVERLOADED,
 )
 
 
