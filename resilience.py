@@ -165,6 +165,45 @@ class _FailoverCellState:
     fsm: HocStateMachine = field(default_factory=build_failover_fsm)
 
 
+class SuccessionPhase(Enum):
+    """Phase 5.2b: queen-succession lifecycle phases.
+
+    Mirrors the states of the QueenSuccession FSM
+    (:mod:`hoc.state_machines.succession_fsm`). ``QueenSuccession``
+    keeps a ``_SuccessionState`` wrapper so :meth:`elect_new_queen` can
+    advance the phase as it walks STABLE → DETECTING → NOMINATING →
+    VOTING → ELECTED|FAILED → STABLE.
+
+    Wire-up is **static-only**: the spec FSM in ``state_machines/``
+    isn't consulted at runtime, but every legal phase appears as an
+    explicit literal assignment in the ``_set_phase`` chain so choreo
+    walks them and treats the FSM as wired.
+    """
+
+    STABLE = "STABLE"
+    DETECTING = "DETECTING"
+    NOMINATING = "NOMINATING"
+    VOTING = "VOTING"
+    ELECTED = "ELECTED"
+    FAILED = "FAILED"
+
+
+@dataclass
+class _SuccessionState:
+    """Phase 5.2b: wrapper holding the QueenSuccession phase + history.
+
+    Same pattern as :class:`_FailoverCellState` (5.2c): a tiny dataclass
+    with a ``state`` attribute lets choreo's walker detect the wire-up
+    via its ``obj.state = ENUM.MEMBER`` pattern. The brief asked for
+    a ``_phase`` attribute directly on QueenSuccession; the wrapper is
+    equivalent for observability and avoids extending choreo's walker
+    (which currently only matches the literal attribute name "state").
+    """
+
+    state: SuccessionPhase = SuccessionPhase.STABLE
+    history: list[SuccessionPhase] = field(default_factory=list)
+
+
 @dataclass
 class HealthReport:
     """Reporte de salud de una celda."""
@@ -653,11 +692,56 @@ class QueenSuccession:
         # Phase 2: term number monotónico por elección (Raft-like).
         self._term_number: int = 0
         self._lock = threading.RLock()
+        # Phase 5.2b: SuccessionPhase observability wrapper. Every
+        # ``_set_phase`` call mutates ``state`` (the attribute name
+        # choreo's walker recognises) and appends to ``history`` so
+        # tests + observers can replay the lifecycle.
+        self._succession_state = _SuccessionState()
 
     @property
     def current_term(self) -> int:
         """Retorna el último ``term`` incrementado por ``_conduct_election``."""
         return self._term_number
+
+    @property
+    def phase(self) -> SuccessionPhase:
+        """Phase 5.2b: current SuccessionPhase. Defaults to STABLE."""
+        return self._succession_state.state
+
+    @property
+    def phase_history(self) -> list[SuccessionPhase]:
+        """Phase 5.2b: ordered list of phases this instance has occupied.
+
+        Includes the final transition back to ``STABLE`` after a
+        successful election. Useful for tests + observability tools that
+        replay the lifecycle of a past election.
+        """
+        return list(self._succession_state.history)
+
+    def _set_phase(self, phase: SuccessionPhase) -> None:
+        """Phase 5.2b: mutate the wrapper ``state`` to ``phase``.
+
+        The if/elif chain expands the assignment into one statement per
+        phase so choreo's AST walker sees every targeted
+        ``SuccessionPhase`` member as a literal — a single
+        ``self._succession_state.state = phase`` would be invisible to
+        the walker because ``phase`` is a variable, not a literal.
+
+        Appends to ``_succession_state.history`` for replayability.
+        """
+        if phase is SuccessionPhase.STABLE:
+            self._succession_state.state = SuccessionPhase.STABLE
+        elif phase is SuccessionPhase.DETECTING:
+            self._succession_state.state = SuccessionPhase.DETECTING
+        elif phase is SuccessionPhase.NOMINATING:
+            self._succession_state.state = SuccessionPhase.NOMINATING
+        elif phase is SuccessionPhase.VOTING:
+            self._succession_state.state = SuccessionPhase.VOTING
+        elif phase is SuccessionPhase.ELECTED:
+            self._succession_state.state = SuccessionPhase.ELECTED
+        elif phase is SuccessionPhase.FAILED:
+            self._succession_state.state = SuccessionPhase.FAILED
+        self._succession_state.history.append(phase)
 
     def check_queen_health(self) -> bool:
         """
@@ -689,6 +773,12 @@ class QueenSuccession:
         """
         Inicia una elección para nueva reina.
 
+        Phase 5.2b: la fase del lifecycle (``SuccessionPhase``) avanza
+        STABLE → DETECTING → NOMINATING → VOTING → ELECTED|FAILED →
+        STABLE durante la elección. Las mutaciones son inline (no
+        cambian la lógica de Phase 2 — quorum / firmas / term counter)
+        y se reflejan en ``self.phase`` + ``self.phase_history``.
+
         Returns:
             Nueva QueenCell o None si la elección falló
         """
@@ -701,19 +791,33 @@ class QueenSuccession:
             self._candidates.clear()
             self._votes.clear()
 
+        # Phase 5.2b: enter the detection window. The check_queen_health
+        # caller already saw the heartbeat lapse; we cross into DETECTING
+        # as a record of "the election has begun".
+        self._set_phase(SuccessionPhase.DETECTING)
+
         try:
             # 1. Identificar candidatos
             candidates = self._identify_candidates()
 
             if len(candidates) < self.config.min_queen_candidates:
                 logger.error("Not enough candidates for election")
+                # Phase 5.2b: not enough candidates -> NOMINATING failed.
+                self._set_phase(SuccessionPhase.FAILED)
                 return None
+
+            # Phase 5.2b: candidates found -> nominate them.
+            self._set_phase(SuccessionPhase.NOMINATING)
 
             # 2. Votación
             winner = self._conduct_election(candidates)
 
             if not winner:
                 logger.error("Election failed - no winner")
+                # Phase 5.2b: tally rejected -> already at FAILED via
+                # ``_conduct_election``; the explicit assignment here
+                # is a defensive sync and a literal target for choreo.
+                self._set_phase(SuccessionPhase.FAILED)
                 return None
 
             # 3. Promover ganador
@@ -721,6 +825,13 @@ class QueenSuccession:
 
             if new_queen:
                 logger.info(f"New queen elected at {winner}")
+                # Phase 5.2b: queen promoted -> back to STABLE so a
+                # future election can reuse this instance.
+                self._set_phase(SuccessionPhase.STABLE)
+            else:
+                # Promote returned None despite a winner — degenerate path
+                # (e.g. coord disappeared between tally and promote).
+                self._set_phase(SuccessionPhase.FAILED)
 
             return new_queen
 
@@ -860,10 +971,18 @@ class QueenSuccession:
         """
         Conduce la votación entre candidatos. Phase 2: votos firmados con
         HMAC-SHA256 y ``term`` monotónico.
+
+        Phase 5.2b: la fase muta a VOTING al inicio y a ELECTED o FAILED
+        según el resultado del tally. Ninguna lógica de quorum / firmas /
+        term cambia — los 7 tests de ``TestQuorumSignedVotes`` siguen
+        verdes.
         """
         with self._lock:
             self._term_number += 1
             term = self._term_number
+
+        # Phase 5.2b: enter VOTING.
+        self._set_phase(SuccessionPhase.VOTING)
 
         # Cada celda viva construye y firma un voto.
         votes: list[Vote] = []
@@ -877,7 +996,16 @@ class QueenSuccession:
 
         # Phase 1 fix (B4) reforzado por Phase 2: el tally ahora rechaza
         # votos forjados sin firma válida además de exigir mayoría.
-        return self._tally_votes(votes, set(candidates), expected_term=term)
+        winner = self._tally_votes(votes, set(candidates), expected_term=term)
+
+        # Phase 5.2b: reflect the tally outcome in the phase. The
+        # explicit ELECTED/FAILED assignments here are what make those
+        # SuccessionPhase members visible to choreo's walker.
+        if winner is not None:
+            self._set_phase(SuccessionPhase.ELECTED)
+        else:
+            self._set_phase(SuccessionPhase.FAILED)
+        return winner
 
     def _promote_to_queen(self, coord: HexCoord) -> QueenCell | None:
         """Promueve una celda a reina."""

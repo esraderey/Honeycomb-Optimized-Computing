@@ -783,18 +783,14 @@ class TestHocIntegration:
     """End-to-end check that choreo, run against the HOC repo it lives in,
     produces exactly the findings documented in the current closure.
 
-    Phase 5.2a cleanup status:
+    Phase 5.2b cleanup status:
 
     - **0 errors** -- no undocumented mutations.
-    - **0 warnings** (down from 1 in Phase 4.3): MIGRATING is now wired
-      via ``CellFailover._migrate_work`` (admin_start_migration) and
-      SEALED via ``HoneycombCell.seal()`` (admin_seal). No CellState
-      member is dead anymore.
-    - **1 info** (down from 3): FailoverFlow is wired via the
-      ``_FailoverCellState`` wrapper (Phase 5.2c) and PheromoneDeposit
-      is wired via the static ``state`` field on the dataclass
-      (Phase 5.2a). Only QueenSuccession remains declarative-only
-      until 5.2b.
+    - **0 warnings** -- MIGRATING / SEALED wired in Phase 5.1.
+    - **0 info** -- all 5 FSMs are now wired (CellState 5.1,
+      FailoverFlow 5.2c, PheromoneDeposit 5.2a, QueenSuccession 5.2b,
+      TaskLifecycle stayed wired since Phase 4.1). Phase 5.6 can flip
+      ``--strict`` in CI.
     """
 
     def test_hoc_smoke(self):
@@ -842,6 +838,7 @@ class TestHocIntegration:
 
         decl = by_kind.get("declarative_only", [])
         decl_names = {f.fsm for f in decl}
-        # Phase 5.2a wired PheromoneDeposit via the static ``state``
-        # field. Only QueenSuccession remains until 5.2b.
-        assert decl_names == {"QueenSuccession"}
+        # Phase 5.2b wired QueenSuccession via the ``_succession_state``
+        # wrapper. All 5 FSMs are now wired (TaskLifecycle stayed
+        # wired since Phase 4.1).
+        assert decl_names == set()
