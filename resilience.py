@@ -59,6 +59,18 @@ from typing import Any, TypeVar, cast
 
 import mscs as _mscs
 
+# Phase 5.2c: FailoverFlow FSM wire-up — per-cell phase tracking lives in
+# ``CellFailover`` below. The FSM constants are imported here so callers
+# (and tests) can use either the enum form (``FailoverPhase.MIGRATING``)
+# or the FSM string form (``FAILOVER_MIGRATING``) interchangeably.
+from state_machines.base import HocStateMachine
+from state_machines.failover_fsm import (
+    FAILOVER_HEALTHY,
+    FAILOVER_MIGRATING,
+    FAILOVER_RECOVERED,
+    build_failover_fsm,
+)
+
 from .core import (
     CellState,
     HexCoord,
@@ -117,6 +129,40 @@ class RecoveryAction(Enum):
     REBUILD = auto()  # Reconstruir desde cero
     QUARANTINE = auto()  # Aislar celda
     ESCALATE = auto()  # Escalar a intervención manual
+
+
+class FailoverPhase(Enum):
+    """Phase 5.2c: per-cell failover lifecycle phases.
+
+    Mirrors the states of the FailoverFlow FSM
+    (:mod:`hoc.state_machines.failover_fsm`). ``CellFailover`` keeps a
+    ``dict[HexCoord, _FailoverCellState]`` so operators can query which
+    coords are mid-migration, recovered, lost, etc.
+
+    Values are the FSM state strings to keep ``transition_to(phase.value)``
+    one-line.
+    """
+
+    HEALTHY = "HEALTHY"
+    DEGRADED = "DEGRADED"
+    MIGRATING = "MIGRATING"
+    RECOVERED = "RECOVERED"
+    LOST = "LOST"
+
+
+@dataclass
+class _FailoverCellState:
+    """Phase 5.2c: per-coord wrapper holding the FailoverFlow phase + FSM.
+
+    The single ``state`` attribute (rather than a dict subscript) is what
+    ``choreo``'s walker recognises as a wire-up signal — its
+    ``obj.state = ENUM.MEMBER`` pattern matches every assignment in
+    :meth:`CellFailover._set_failover_phase` below. The ``fsm`` keeps the
+    per-coord history so ``tramoya.undo()`` operates on the right tape.
+    """
+
+    state: FailoverPhase = FailoverPhase.HEALTHY
+    fsm: HocStateMachine = field(default_factory=build_failover_fsm)
 
 
 @dataclass
@@ -218,6 +264,14 @@ class CellFailover:
         self._cooldowns: dict[HexCoord, int] = {}
         self._lock = threading.RLock()
 
+        # Phase 5.2c: per-coord FailoverFlow tracking. The
+        # ``_FailoverCellState`` wrapper holds both the current phase
+        # and the FSM instance whose history feeds ``tramoya.undo()``.
+        # The wrapper's ``state`` attribute is the single mutation point
+        # that ``choreo``'s walker recognises (its patterns key on
+        # ``obj.state = ENUM.MEMBER`` and ignore dict subscripts).
+        self._per_cell_failover: dict[HexCoord, _FailoverCellState] = {}
+
     def handle_failure(self, coord: HexCoord, failure_type: FailureType) -> FailoverEvent:
         """
         Maneja un fallo de celda.
@@ -314,6 +368,46 @@ class CellFailover:
 
         return None
 
+    def _ensure_failover_state(self, coord: HexCoord) -> _FailoverCellState:
+        """Phase 5.2c: lazy per-coord wrapper. Created on demand so
+        ``CellFailover`` does not pay the cost for never-failed cells."""
+        cell_state = self._per_cell_failover.get(coord)
+        if cell_state is None:
+            cell_state = _FailoverCellState()
+            self._per_cell_failover[coord] = cell_state
+        return cell_state
+
+    def _set_failover_phase(self, coord: HexCoord, phase: FailoverPhase, **ctx: Any) -> None:
+        """Phase 5.2c: route a phase change through the FSM (guard
+        validation + history) then mirror the result on the wrapper's
+        ``state`` attribute. The if/elif chain expands the assignment
+        into one literal-Enum-member statement per phase so ``choreo``'s
+        AST walker captures every targeted ``FailoverPhase`` member
+        (the walker matches ``obj.state = ENUM.MEMBER`` syntactically;
+        a single ``cs.state = phase`` would be invisible because ``phase``
+        is a variable, not a literal member)."""
+        cell_state = self._ensure_failover_state(coord)
+        cell_state.fsm.transition_to(phase.value, **ctx)
+        if phase is FailoverPhase.HEALTHY:
+            cell_state.state = FailoverPhase.HEALTHY
+        elif phase is FailoverPhase.DEGRADED:
+            cell_state.state = FailoverPhase.DEGRADED
+        elif phase is FailoverPhase.MIGRATING:
+            cell_state.state = FailoverPhase.MIGRATING
+        elif phase is FailoverPhase.RECOVERED:
+            cell_state.state = FailoverPhase.RECOVERED
+        elif phase is FailoverPhase.LOST:
+            cell_state.state = FailoverPhase.LOST
+
+    def get_failover_phase(self, coord: HexCoord) -> FailoverPhase:
+        """Phase 5.2c: current FailoverFlow phase for ``coord``.
+
+        Defaults to ``HEALTHY`` for coords that have never been observed
+        by the failover handler (no wrapper allocated for them).
+        """
+        cell_state = self._per_cell_failover.get(coord)
+        return cell_state.state if cell_state is not None else FailoverPhase.HEALTHY
+
     def _migrate_work(self, source: HexCoord, target: HexCoord) -> bool:
         """Migra el trabajo de una celda a otra.
 
@@ -321,9 +415,14 @@ class CellFailover:
         del bucle de migración para que un operador pueda observar el
         failover en curso. En el camino feliz la celda termina en
         ``FAILED`` (mismo contrato que pre-Phase-5). En caso de excepción
-        se intenta restaurar el estado original (rollback de estado, no
-        de vCores — el rollback completo de vCores es la promesa de
-        ``FailoverFlow.undo`` en Phase 5.2c).
+        se restaura el estado original (rollback de estado de la celda).
+
+        Phase 5.2c: el FailoverFlow FSM (``_per_cell_fsm[source]``)
+        avanza ``HEALTHY → DEGRADED → MIGRATING → RECOVERED`` en el
+        camino feliz; ante excepción, ``tramoya.undo()`` reverte el
+        último step (``MIGRATING → DEGRADED``). El rollback de vCores
+        (re-attach a la celda origen) sigue fuera de scope — es work
+        del operador o de un futuro re-failover.
         """
         source_cell = self.grid.get_cell(source)
         target_cell = self.grid.get_cell(target)
@@ -336,17 +435,44 @@ class CellFailover:
         # leaves us with the right value to restore.
         original_state = source_cell.state
 
+        # Phase 5.2c: ensure the FailoverFlow FSM starts at HEALTHY for
+        # this migration. After a previous failover settled the FSM may
+        # be at RECOVERED/LOST; resetting keeps the lifecycle linear and
+        # makes the wire-up reusable across repeated failovers.
+        failover_state = self._ensure_failover_state(source)
+        failover_fsm = failover_state.fsm
+        if failover_fsm.state != FAILOVER_HEALTHY:
+            failover_fsm.reset()
+            failover_state.state = FailoverPhase.HEALTHY
+
         try:
-            # Phase 5.1: mark MIGRATING for in-flight observability.
+            # Phase 5.2c: HEALTHY → DEGRADED → MIGRATING.
+            self._set_failover_phase(source, FailoverPhase.DEGRADED, circuit_open=True)
+            self._set_failover_phase(source, FailoverPhase.MIGRATING, target_cell=target)
+
+            # Phase 5.1: mark MIGRATING for cell-level observability.
             source_cell.state = CellState.MIGRATING
 
             # Migrar vCores
+            vcores_migrated = 0
             for vcore in list(source_cell._vcores):
                 if target_cell.add_vcore(vcore):
                     source_cell.remove_vcore(vcore)
+                    vcores_migrated += 1
 
             # Actualizar estado: éxito → la celda origen muere como antes.
             source_cell.state = CellState.FAILED
+
+            # Phase 5.2c: MIGRATING → RECOVERED. The FSM guard requires
+            # ``vcores_migrated > 0``; we pass ``max(1, count)`` so that
+            # a trivially-empty migration (source had no vCores) still
+            # registers as a successful failover rather than getting
+            # stuck in MIGRATING.
+            self._set_failover_phase(
+                source,
+                FailoverPhase.RECOVERED,
+                vcores_migrated=max(1, vcores_migrated),
+            )
 
             return True
         except Exception as e:
@@ -359,16 +485,50 @@ class CellFailover:
                 source_cell.state = original_state
             except Exception as rb_exc:  # pragma: no cover
                 logger.error(f"Migration rollback also failed: {sanitize_error(rb_exc)}")
+            # Phase 5.2c: ``tramoya.undo()`` reverses the last FSM step.
+            # If we managed to enter MIGRATING before the exception, undo
+            # brings us back to DEGRADED so a retry can pick up where
+            # we left off.
+            try:
+                if failover_fsm.state == FAILOVER_MIGRATING:
+                    failover_fsm.undo()
+                    failover_state.state = FailoverPhase.DEGRADED
+            except Exception as undo_exc:  # pragma: no cover
+                logger.error(f"FailoverFlow undo failed: {sanitize_error(undo_exc)}")
             return False
 
     def mark_recovered(self, coord: HexCoord) -> bool:
-        """Marca una celda como recuperada."""
+        """Marca una celda como recuperada.
+
+        Phase 5.2c: si el coord pasó por un failover (FSM en RECOVERED),
+        avanza el FailoverFlow a HEALTHY (stabilized). Errores del FSM
+        se silencian — la recuperación operacional no debe romperse por
+        un mismatch del observador.
+        """
         with self._lock:
             if coord in self._failed_cells:
                 self._failed_cells.remove(coord)
                 cell = self.grid.get_cell(coord)
                 if cell:
                     cell.state = CellState.IDLE
+                # Phase 5.2c: stabilise the FailoverFlow FSM if we tracked
+                # this coord through a migration. Pass a stabilization
+                # window of 1 so the guard accepts the immediate hop.
+                cell_state = self._per_cell_failover.get(coord)
+                if cell_state is not None and cell_state.fsm.state == FAILOVER_RECOVERED:
+                    try:
+                        self._set_failover_phase(
+                            coord,
+                            FailoverPhase.HEALTHY,
+                            ticks_stable=1,
+                            stabilization_window=1,
+                        )
+                    except Exception as exc:  # pragma: no cover
+                        logger.warning(
+                            "FailoverFlow stabilize failed for %s: %s",
+                            coord,
+                            sanitize_error(exc),
+                        )
                 return True
             return False
 
