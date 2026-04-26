@@ -37,6 +37,13 @@ from .grid_config import HoneycombConfig
 from .grid_geometry import HexCoord, HexDirection
 from .health import CircuitBreaker
 from .locking import RWLock
+
+# Phase 5.3: structured event log lives in ``core.observability`` so it
+# avoids the dual-import dance that the top-level package layout
+# (``package-dir = {hoc = "."}``) imposes on top-level modules. Relative
+# import is fine here — both consumers (cell + cells_specialized) live
+# in the same subpackage.
+from .observability import log_cell_state_transition
 from .pheromone import PheromoneField, PheromoneType
 
 if TYPE_CHECKING:
@@ -187,6 +194,11 @@ class HoneycombCell:
 
         self._state = new_state
         logger.debug(f"Cell {self.coord}: {old_state.name} → {new_state.name}")
+
+        # Phase 5.3: emit a structured ``cell.state_changed`` event for
+        # the observability log. The helper hides the field-name
+        # convention so future readers add events with the same shape.
+        log_cell_state_transition(self.coord, old_state.name, new_state.name)
 
         for callback in self._state_callbacks:
             try:
@@ -551,6 +563,17 @@ class HoneycombCell:
                 self.coord,
                 reason,
                 final_metrics,
+            )
+            # Phase 5.3: structured ``cell.sealed`` event so log
+            # collectors can count graceful shutdowns separately from
+            # the underlying state-change event emitted by _set_state.
+            from .observability import get_event_logger
+
+            get_event_logger("hoc.events.cell").info(
+                "cell.sealed",
+                coord=str(self.coord),
+                reason=reason,
+                **final_metrics,
             )
             return True
 

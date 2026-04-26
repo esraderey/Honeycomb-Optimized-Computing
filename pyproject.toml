@@ -40,6 +40,12 @@ dependencies = [
     # exports (Deque, deque, warnings). 733 tests + `choreo check` produce
     # identical output; mermaid drift detector pass.
     "tramoya>=1.5.0",
+    # Phase 5.3: structured logging for observability of cell state
+    # transitions, migrations, elections, and seals. JSON output in
+    # production, ConsoleRenderer in dev. ~70 KB, MIT, zero transitive
+    # deps. Pinned `>=25.0.0` in requirements.txt; ADR-011 documents
+    # the choice (structlog over loguru / OpenTelemetry).
+    "structlog>=25.0.0",
 ]
 
 [project.optional-dependencies]
@@ -68,6 +74,9 @@ dev = [
 [tool.setuptools]
 package-dir = {hoc = "."}
 packages = ["hoc", "hoc.core", "hoc.metrics", "hoc.state_machines"]
+# Phase 5.3: ``observability`` lives inside ``hoc.core`` (as
+# ``core/observability.py``), so it ships with the existing
+# ``hoc.core`` package — no separate entry needed here.
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -224,6 +233,12 @@ module = [
     # the boundary; our own state_machines wrapper provides the typed surface.
     "tramoya",
     "tramoya.*",
+    # Phase 5.3: structlog ships PEP 561 stubs but follow_imports=silent
+    # + no_site_packages=true hide them. Treat as untyped at the
+    # boundary; our own ``hoc.core.observability`` wrapper provides the
+    # typed surface for the rest of the codebase.
+    "structlog",
+    "structlog.*",
 ]
 ignore_missing_imports = true
 
@@ -269,6 +284,7 @@ ignore_errors = true
 [[tool.mypy.overrides]]
 module = ["HOC.state_machines", "HOC.state_machines.*"]
 ignore_errors = true
+
 
 # ─── Bandit (config here for completeness; CLI call in CI uses these) ─────────
 [tool.bandit]

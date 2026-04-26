@@ -81,6 +81,7 @@ from .core import (
     QueenCell,
     WorkerCell,
 )
+from .core.observability import get_event_logger
 from .security import (
     sanitize_error,
     sign_payload as _sign_payload,
@@ -484,6 +485,16 @@ class CellFailover:
             failover_fsm.reset()
             failover_state.state = FailoverPhase.HEALTHY
 
+        # Phase 5.3: structured ``failover.migrate_started`` event so
+        # operators can correlate the start with the eventual completed
+        # event. Emitted before any state mutation.
+        get_event_logger("hoc.events.failover").info(
+            "failover.migrate_started",
+            source=str(source),
+            target=str(target),
+            original_state=original_state.name,
+        )
+
         try:
             # Phase 5.2c: HEALTHY → DEGRADED → MIGRATING.
             self._set_failover_phase(source, FailoverPhase.DEGRADED, circuit_open=True)
@@ -513,6 +524,15 @@ class CellFailover:
                 vcores_migrated=max(1, vcores_migrated),
             )
 
+            # Phase 5.3: structured ``failover.migrate_completed`` event.
+            get_event_logger("hoc.events.failover").info(
+                "failover.migrate_completed",
+                source=str(source),
+                target=str(target),
+                vcores_migrated=vcores_migrated,
+                result="success",
+            )
+
             return True
         except Exception as e:
             logger.error(f"Migration error: {sanitize_error(e)}")
@@ -534,6 +554,15 @@ class CellFailover:
                     failover_state.state = FailoverPhase.DEGRADED
             except Exception as undo_exc:  # pragma: no cover
                 logger.error(f"FailoverFlow undo failed: {sanitize_error(undo_exc)}")
+            # Phase 5.3: structured failure event. The ``error`` field
+            # uses the sanitised string to avoid leaking PII / paths.
+            get_event_logger("hoc.events.failover").info(
+                "failover.migrate_completed",
+                source=str(source),
+                target=str(target),
+                result="failed",
+                error=sanitize_error(e),
+            )
             return False
 
     def mark_recovered(self, coord: HexCoord) -> bool:
@@ -796,6 +825,14 @@ class QueenSuccession:
         # as a record of "the election has begun".
         self._set_phase(SuccessionPhase.DETECTING)
 
+        # Phase 5.3: structured ``election.started`` event. The matching
+        # ``election.completed`` event below carries the outcome.
+        election_log = get_event_logger("hoc.events.election")
+        election_log.info(
+            "election.started",
+            term=self._term_number + 1,
+        )
+
         try:
             # 1. Identificar candidatos
             candidates = self._identify_candidates()
@@ -804,6 +841,12 @@ class QueenSuccession:
                 logger.error("Not enough candidates for election")
                 # Phase 5.2b: not enough candidates -> NOMINATING failed.
                 self._set_phase(SuccessionPhase.FAILED)
+                election_log.info(
+                    "election.completed",
+                    term=self._term_number,
+                    candidate_count=len(candidates),
+                    result="not_enough_candidates",
+                )
                 return None
 
             # Phase 5.2b: candidates found -> nominate them.
@@ -818,6 +861,12 @@ class QueenSuccession:
                 # ``_conduct_election``; the explicit assignment here
                 # is a defensive sync and a literal target for choreo.
                 self._set_phase(SuccessionPhase.FAILED)
+                election_log.info(
+                    "election.completed",
+                    term=self._term_number,
+                    candidate_count=len(candidates),
+                    result="no_winner",
+                )
                 return None
 
             # 3. Promover ganador
@@ -828,10 +877,26 @@ class QueenSuccession:
                 # Phase 5.2b: queen promoted -> back to STABLE so a
                 # future election can reuse this instance.
                 self._set_phase(SuccessionPhase.STABLE)
+                # Phase 5.3: structured success event with the term +
+                # winner coord.
+                election_log.info(
+                    "election.completed",
+                    term=self._term_number,
+                    winner=str(winner),
+                    candidate_count=len(candidates),
+                    result="elected",
+                )
             else:
                 # Promote returned None despite a winner — degenerate path
                 # (e.g. coord disappeared between tally and promote).
                 self._set_phase(SuccessionPhase.FAILED)
+                election_log.info(
+                    "election.completed",
+                    term=self._term_number,
+                    winner=str(winner),
+                    candidate_count=len(candidates),
+                    result="promote_failed",
+                )
 
             return new_queen
 
