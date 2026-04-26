@@ -7,4 +7,7 @@ numpy>=1.21.0
 # Pinned for reproducibility — see ADR-007 for the integration rationale.
 # 2026-04-25: bumped 1.4.0 → 1.4.1 for the deque-history (O(1) pop) +
 # transition-graph __eq__ fixes, both on HOC's own P0 list.
-tramoya==1.4.1
+# 2026-04-26: bumped 1.4.1 → 1.5.0. Drop-in upgrade — public API
+# unchanged (Machine, MachineBuilder, exceptions, WILDCARD); only
+# additive new exports (Deque, deque, warnings).
+tramoya==1.5.0
