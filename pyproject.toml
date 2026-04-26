@@ -30,7 +30,11 @@ dependencies = [
     # FSMs are constructed in production paths (HoneycombCell.state.setter,
     # HiveTask transitions, QueenSuccession election, PheromoneDeposit decay,
     # CellFailover migration). Pinned in requirements.txt for CI reproducibility.
-    "tramoya>=1.4.0",
+    # 2026-04-25 bump 1.4.0 → 1.4.1: O(n)→O(1) history pop (deque maxlen),
+    # __eq__ now compares transition graph topology, reset(clear_ctx=...) flag,
+    # better transition-tuple validation. Both fixes match HOC's analysis of
+    # tramoya 1.4.0 (the deque + __eq__ items were on our P0 list).
+    "tramoya>=1.4.1",
 ]
 
 [project.optional-dependencies]
