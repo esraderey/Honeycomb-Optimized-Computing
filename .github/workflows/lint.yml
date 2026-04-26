@@ -130,13 +130,15 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e .
-      # Phase 4.1: choreo runs static AST analysis comparing observed
-      # `obj.state = X` mutations against declared FSM specs in
-      # state_machines/. Errors (undocumented mutations) break the
-      # build; warnings (B12-bis/B12-ter dead states known from the
-      # Phase 4 closure) are reported but do not. After those bugs
-      # are resolved in Phase 5+, switch to `--strict` to enforce
-      # zero warnings as well. See ADR-008.
-      - run: python -m choreo check
+      # Phase 5.6 (formerly Phase 4.1): choreo runs static AST analysis
+      # comparing observed ``obj.state = X`` mutations against declared
+      # FSM specs in ``state_machines/``. After Phase 5.1 + 5.2a/b/c
+      # closed every wire-up (no dead states, no enum-extras, no
+      # declarative-only FSMs), the report is 0 errors / 0 warnings /
+      # 0 info. ``--strict`` raises warnings to errors so any future
+      # regression (e.g. a new FSM left declarative-only, or a dead
+      # enum member added without a wire-up plan) breaks CI. See
+      # ADR-008 and ADR-012.
+      - run: python -m choreo check --strict
       # Sanity check: JSON output is valid JSON.
       - run: python -m choreo check --json | python -m json.tool > /dev/null

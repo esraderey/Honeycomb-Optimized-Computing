@@ -1,6 +1,6 @@
 """
-PheromoneDeposit FSM (Phase 4.5)
-=================================
+PheromoneDeposit FSM (Phase 4.5 + Phase 5.2a)
+=============================================
 
 Conceptual lifecycle of a :class:`hoc.nectar.PheromoneDeposit`:
 
@@ -17,35 +17,35 @@ Conceptual lifecycle of a :class:`hoc.nectar.PheromoneDeposit`:
         │           │
         └────► EVAPORATED  (terminal)
 
-Why declarative-only
---------------------
+Phase 5.2a wire-up — *static-only*
+----------------------------------
 
-Unlike the ``CellState`` FSM (4.3), this FSM is **declarative-only**: the
-spec is captured here for documentation (``docs/state-machines.md``) and
-property-based testing of the state graph, but the production code in
-``nectar.py`` does **not** route deposit transitions through it.
+Phase 5.2a added a ``state: PheromonePhase`` field on
+:class:`hoc.nectar.PheromoneDeposit` and the corresponding mutations in
+``PheromoneTrail.evaporate`` / ``diffuse_to_neighbors``. This is a
+**static-only** wire-up: the field mirrors the phase the deposit is
+conceptually in, but no per-instance ``HocStateMachine`` is allocated
+and no runtime guard validation happens. The reason is the perf budget
+(< 3 % overhead on ``test_nectar_flow_tick``) and the deposit
+population (~90k objects per trail at default caps). A per-instance FSM
+or a global validator with a lock would exceed the budget by orders
+of magnitude.
 
-Reason: ``PheromoneDeposit`` instances are extremely numerous (production
-trails carry up to ``DEFAULT_MAX_COORDS = 10_000`` coordinates, each with
-up to 9 deposits — ~90k objects). Allocating one ``HocStateMachine`` per
-deposit, or holding a global mutex around a shared validator FSM, would
-exceed the Phase 4 ``<5 %`` benchmark budget by orders of magnitude. A
-deposit's lifecycle is also implicit: there is no ``state`` field on
-``PheromoneDeposit`` — the phase is derivable from ``intensity`` and
-``time.time() - timestamp`` alone, and ``PheromoneTrail.evaporate`` reads
-those scalar fields directly.
+The mirror gives us the things we wanted from a runtime wire-up
+without the cost:
 
-Writing the FSM here still pays:
+- **Observability**: operators can read ``deposit.state`` and tell
+  FRESH apart from DECAYING / DIFFUSING / EVAPORATED.
+- **Static checking**: ``choreo`` walks the explicit
+  ``deposit.state = PheromonePhase.X`` assignments in ``nectar.py``
+  and treats the FSM as wired (no longer ``declarative_only``).
+- **Property tests**: still target the FSM graph via
+  ``state_machines/`` so the spec stays the source of truth for
+  reachability invariants.
 
-- The Mermaid export documents the lifecycle for new contributors.
-- Property tests validate the state graph (e.g. that EVAPORATED is
-  terminal, that no transition skips DECAYING out of FRESH directly).
-- If a future phase profiles the cleanup hot path and decides the
-  observability of explicit FSM transitions is worth the cost, the
-  transitions are already specified here — wire-up becomes mechanical.
-
-The Phase 4 closure documents this trade-off as a deliberate gap rather
-than a missing piece.
+If a future phase decides explicit FSM transitions are worth the cost,
+the spec is already here; wire-up becomes a per-call swap of the
+attribute mutation for ``transition_to(phase.value)``.
 
 Lifecycle phases (definitions)
 ------------------------------
@@ -147,7 +147,13 @@ def build_pheromone_fsm() -> HocStateMachine:
         states=list(ALL_PHEROMONE_STATES),
         transitions=transitions,
         initial=PHEROMONE_FRESH,
-        # No history needed — declarative-only FSM, no per-instance
-        # storage of past transitions.
+        # Phase 5.2a: no per-instance history — the wire-up is
+        # static-only (a ``state`` attribute mirror on the deposit
+        # dataclass, no runtime FSM allocation).
         history_size=0,
+        # Phase 5.2a: explicit binding to the host enum so choreo skips
+        # the member-subset heuristic. The enum lives in ``nectar.py``
+        # next to the ``PheromoneDeposit`` dataclass that owns the
+        # ``state`` field.
+        enum_name="PheromonePhase",
     )

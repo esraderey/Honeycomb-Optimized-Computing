@@ -1,6 +1,6 @@
 """
-FailoverFlow FSM (Phase 4.6)
-============================
+FailoverFlow FSM (Phase 4.6 + Phase 5.2c)
+=========================================
 
 Conceptual flow of a cell failover in
 :class:`hoc.resilience.CellFailover`:
@@ -20,6 +20,26 @@ Conceptual flow of a cell failover in
                                                                    │
                                                                    └── (from LOST)
 
+Phase 5.2c wire-up
+------------------
+
+Wired in :meth:`hoc.resilience.CellFailover._migrate_work`:
+
+- ``CellFailover._per_cell_phase: dict[HexCoord, FailoverPhase]`` tracks
+  per-coord lifecycle.
+- ``CellFailover._per_cell_fsm: dict[HexCoord, HocStateMachine]`` keeps
+  one FSM instance per coord so ``tramoya.undo()`` works on the right
+  history.
+- ``CellFailover._last_failover_phase: FailoverPhase`` mirrors the most
+  recent transition; this is the attribute the static checker
+  ``choreo`` walks for the ``obj.attr = ENUM.MEMBER`` pattern (it does
+  not yet handle dict subscript assignments).
+- The lifecycle on a successful migration is
+  ``HEALTHY → DEGRADED → MIGRATING → RECOVERED``. On exception the FSM
+  ``undo()`` reverses the last transition (``MIGRATING → DEGRADED``).
+- ``CellFailover.get_failover_phase(coord)`` exposes the per-cell phase
+  to operators / observability tooling.
+
 Undo
 ----
 
@@ -29,32 +49,12 @@ all mirror cells reject the workload, ``undo()`` returns the FSM to
 ``DEGRADED`` and the caller compensates by reattaching the workload to
 the source (when the source is still responsive).
 
-The same caveat as the rest of Phase 4 applies: undoing the FSM does
-**not** revert external side effects. The caller of
-:meth:`hoc.resilience.CellFailover.migrate_cell` is responsible for
-restoring vCores to the source cell when the FSM rolls back.
-
-Why declarative-only
---------------------
-
-Same trade-off as the other Phase 4 FSMs (task / pheromone / succession).
-``CellFailover`` exposes :meth:`migrate_cell` and :meth:`mark_recovered`
-but does not maintain a per-cell failover state — failed cells live in a
-``set[HexCoord]`` and migration is a single synchronous method.
-
-Wiring this in would require:
-
-1. A per-cell ``_failover_phase`` map on ``CellFailover``.
-2. Splitting ``migrate_cell`` into separate methods for each transition
-   (start, complete, abort) so FSM hooks have well-defined targets.
-3. Carefully sequencing the FSM transitions inside the existing
-   try/except block so a partial migration rolls back deterministically.
-
-Phase 4 ships the FSM as documentation + Mermaid + property tests.
-Phase 4 closure flags the wire-up as a deliberate gap; the natural time
-to do it is when ``resilience.py`` is split into a subpackage (Phase
-5+ per ADR-006), since that split will already require touching every
-``CellFailover`` method.
+The caller of :meth:`hoc.resilience.CellFailover._migrate_work` is
+still responsible for restoring vCores to the source cell when the FSM
+rolls back; ``undo()`` only reverts FSM state, not external side
+effects. Phase 5.2c restores ``CellState`` (the cell-level marker) and
+the failover phase, but the vCore-level rollback is intentionally left
+out (matches the pre-Phase-5 behaviour).
 """
 
 from __future__ import annotations
@@ -135,4 +135,9 @@ def build_failover_fsm() -> HocStateMachine:
         # Larger history because undo on the migration path is part of
         # the design — keep enough states to support multi-step rollbacks.
         history_size=16,
+        # Phase 5.2c: explicit binding to the host enum so choreo skips
+        # member-subset heuristics. ``FailoverPhase`` lives in
+        # ``resilience.py`` (next to the ``CellFailover`` class that
+        # owns the per-cell state). String to avoid a circular import.
+        enum_name="FailoverPhase",
     )

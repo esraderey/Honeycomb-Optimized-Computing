@@ -383,9 +383,46 @@ Decisión de arquitectura: [ADR-010](docs/adr/ADR-010-dead-enum-cleanup.md).
 
 ---
 
-## FASE 5 — Observabilidad
-**Objetivo**: Visibilidad operacional production-grade. **Integración de [trame](https://kitware.github.io/trame/)** (asumiendo que "tramoya" del usuario era trame para dashboards) — opcional, ver nota.
-**Duración**: 3 semanas
+## FASE 5 — Observabilidad — **CERRADA** 🟢
+**Objetivo**: Visibilidad operacional production-grade + cierre del
+gap "FSM declarada pero no wireada" de Phase 4 / 4.3.
+**Duración real**: 1 sesión
+**Tag al cerrar**: `v1.5.0-phase05` — cierre 2026-04-26
+
+**Resultado**: 804 tests pasando (+71 vs Phase 4.3), cobertura
+**79.41%** (+~3 pts), **5/5 FSMs wireadas** (vs 2/5 al inicio):
+Phase 5.1 wireó CellState.MIGRATING + SEALED en CellFailover +
+nuevo `cell.seal()`; Phase 5.2c wireó FailoverFlow vía
+`_FailoverCellState` wrapper + tramoya `undo()`; Phase 5.2a wireó
+PheromoneDeposit como static field (perf budget +1.4% vs <3%);
+Phase 5.2b wireó QueenSuccession vía `_SuccessionState` wrapper sin
+tocar lógica de quorum (7 tests TestQuorumSignedVotes intactos).
+Phase 5.3 introdujo logging estructurado vía `structlog` con 6
+eventos cableados. Phase 5.5 capturó `bench_baseline.json`
+reproducible + `compare_bench.py` + nuevo job CI `bench-regression`.
+Phase 5.6 flippeó `choreo check --strict` en CI — el report quedó
+en **0/0/0** y CI rompe en cualquier futuro PR con dead state /
+enum-extra / declarative-only FSM. Bandit 0/0/0 mantenido. Cierre
+completo: [snapshot/PHASE_05_CLOSURE.md](snapshot/PHASE_05_CLOSURE.md).
+Decisiones de arquitectura:
+[ADR-011](docs/adr/ADR-011-observability-stack.md) (observability
+stack), [ADR-012](docs/adr/ADR-012-choreo-strict-mode.md) (`--strict`
+flip).
+
+### Diferido a Phase 5.x followup / Phase 6
+- 5.4 Métricas Prometheus + `/metrics` endpoint + `hoc-cli serve-metrics`
+  (explícitamente opcional per brief; structured logs de 5.3 cubren
+  caso interim vía promtail / fluent-bit log-derived metrics).
+- 5.7 Dashboard (FastAPI + HTMX + Mermaid live) — explícitamente
+  opcional, deferido a Phase 6.
+- Cobertura 80% target (cerró 79.41%, falta -0.59 pts; `bridge.py`
+  56% sigue siendo el cuello).
+- `test_grid_creation` +25.88% regresión vs baseline (FSM allocation
+  per-cell); documentado para optimizar en Phase 5.x followup.
+
+### Scope original (planeado)
+**Objetivo planeado**: Visibilidad operacional production-grade. **Integración de [trame](https://kitware.github.io/trame/)** (asumiendo que "tramoya" del usuario era trame para dashboards) — opcional, ver nota.
+**Duración estimada**: 3 semanas
 **Tag al cerrar**: `v1.5.0-phase05`
 
 > **Nota**: tramoya (state machines) ya se usa en Fase 4. Para el dashboard interactivo proponemos **trame** (Kitware). Si prefieres otro stack (Streamlit/Plotly Dash/FastAPI+HTMX), ajustar aquí.

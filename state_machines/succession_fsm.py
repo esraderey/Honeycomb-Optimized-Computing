@@ -1,6 +1,6 @@
 """
-QueenSuccession FSM (Phase 4.4b)
-================================
+QueenSuccession FSM (Phase 4.4b + Phase 5.2b)
+=============================================
 
 Conceptual phases of a queen-succession election in
 :class:`hoc.resilience.QueenSuccession`:
@@ -22,38 +22,35 @@ Conceptual phases of a queen-succession election in
                                                                 ▼
                                                             STABLE  (after promote)
 
-Why declarative-only
---------------------
+Phase 5.2b wire-up — *static-only*
+----------------------------------
 
-Same trade-off as :mod:`hoc.state_machines.task_fsm` and
-:mod:`hoc.state_machines.pheromone_fsm`. ``QueenSuccession`` does not
-maintain a multi-phase state field today — it tracks a single boolean
-``_election_in_progress`` plus a monotonic ``_term_number``. The
-phases below are conceptual: they map to *positions inside*
-:meth:`hoc.resilience.QueenSuccession.elect_new_queen` and
-:meth:`_conduct_election` rather than to first-class states stored
-between calls.
+Phase 5.2b added a ``_succession_state: _SuccessionState`` wrapper to
+:class:`hoc.resilience.QueenSuccession` and inline ``_set_phase``
+mutations in :meth:`elect_new_queen` and :meth:`_conduct_election`.
+The phases progress STABLE → DETECTING → NOMINATING → VOTING →
+ELECTED|FAILED → STABLE during an election.
 
-Wiring the FSM in would require:
+The wire-up is **static-only**: no per-instance ``HocStateMachine`` is
+allocated and no runtime guard validation happens. The reason is the
+security-critical nature of ``_tally_votes`` (Phase 2 / B4 hardening) —
+splitting the existing call into multiple FSM-driven methods risks
+regressing the 7 ``TestQuorumSignedVotes`` tests. Static mirroring
+gives us:
 
-1. Adding a ``_phase`` field to ``QueenSuccession`` that mutates
-   transactionally with the existing flag.
-2. Splitting ``elect_new_queen`` into 4-5 methods that the FSM hooks can
-   target individually.
-3. Re-running the **7 quorum signed-vote tests** in
-   ``tests/test_security.py::TestQuorumSignedVotes`` to confirm the
-   refactor does not regress B4 / Phase 2 hardening.
+- **Observability**: ``QueenSuccession.phase`` returns the current
+  ``SuccessionPhase``; ``phase_history`` returns the ordered list of
+  phases this instance has occupied (replayable lifecycle).
+- **Static checking**: ``choreo`` walks the explicit
+  ``_succession_state.state = SuccessionPhase.X`` assignments and
+  treats the FSM as wired (no longer ``declarative_only``).
+- **Anti-regression**: the original tally / signing / term logic is
+  untouched; the 7 quorum tests pass without modification.
 
-Worth doing eventually — the FSM hooks would naturally split tally vs.
-nomination logic — but doing it inside Phase 4 conflates an FSM-modeling
-phase with a security-critical refactor. The declarative FSM here:
-
-- Documents the elections phases for new contributors.
-- Is exported as Mermaid in ``docs/state-machines.md``.
-- Property tests confirm graph structure (terminal states, retry path,
-  ELECTED reachable only via VOTING).
-
-The Phase 4 closure flags the wire-up as a deliberate gap.
+The spec FSM here remains the source of truth for the lifecycle graph
+and the property-test target. If future work decides explicit FSM
+transitions are worth the security re-validation cost, the spec is
+already aligned with what the wire-up observes.
 
 Election security guards (mapped from existing tally code)
 ----------------------------------------------------------
@@ -155,4 +152,8 @@ def build_succession_fsm() -> HocStateMachine:
         transitions=transitions,
         initial=SUCCESSION_STABLE,
         history_size=16,
+        # Phase 5.2b: explicit binding to the host enum so choreo skips
+        # the member-subset heuristic. The enum lives in ``resilience.py``
+        # next to ``QueenSuccession``.
+        enum_name="SuccessionPhase",
     )

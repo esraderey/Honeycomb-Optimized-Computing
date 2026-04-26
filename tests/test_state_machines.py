@@ -32,6 +32,7 @@ from state_machines.cell_fsm import (
     CELL_STATE_EMPTY,
     CELL_STATE_FAILED,
     CELL_STATE_IDLE,
+    CELL_STATE_MIGRATING,
     CELL_STATE_RECOVERING,
     CELL_STATE_SEALED,
     build_cell_fsm,
@@ -376,15 +377,45 @@ class TestCellStateFSMStandalone:
         fsm.transition_to(CELL_STATE_IDLE)
         assert fsm.state == CELL_STATE_IDLE
 
-    def test_dead_state_unreachable_via_lifecycle(self):
+    def test_unknown_state_name_raises(self):
+        # Phase 5.1 wired MIGRATING (admin_start_migration) and SEALED
+        # (admin_seal), so no enum CellState member is dead anymore.
+        # The FSM's "unknown_state" rejection path is exercised here with
+        # a non-enum name to keep coverage on the IllegalStateTransition
+        # error surface.
         fsm = build_cell_fsm()
-        # Phase 4.3: SPAWNING and OVERLOADED were removed from the enum.
-        # MIGRATING and SEALED remain as reserved (no incoming edges
-        # until Phase 5 wires CellFailover.migrate_cell + graceful
-        # shutdown). transition_to to a reserved state should fail.
         with pytest.raises(IllegalStateTransition) as excinfo:
-            fsm.transition_to(CELL_STATE_SEALED)
-        assert excinfo.value.reason == "no_edge"
+            fsm.transition_to("NOT_A_REAL_STATE")
+        assert excinfo.value.reason == "unknown_state"
+
+    def test_admin_start_migration_from_active_succeeds(self):
+        # Phase 5.1: CellFailover._migrate_work uses admin_start_migration
+        # to mark the source cell MIGRATING from any live state.
+        fsm = build_cell_fsm()
+        fsm.transition_to(CELL_STATE_IDLE)  # vcore_added
+        fsm.transition_to("ACTIVE")  # tick_started
+        fsm.transition_to(CELL_STATE_MIGRATING)
+        assert fsm.state == CELL_STATE_MIGRATING
+
+    def test_admin_seal_from_idle_succeeds(self):
+        # Phase 5.1: HoneycombCell.seal() targets SEALED via admin_seal.
+        fsm = build_cell_fsm()
+        fsm.transition_to(CELL_STATE_IDLE)
+        fsm.transition_to(CELL_STATE_SEALED)
+        assert fsm.state == CELL_STATE_SEALED
+
+    def test_admin_seal_from_empty_succeeds(self):
+        # Sealing a freshly-constructed cell (still EMPTY) is valid.
+        fsm = build_cell_fsm()
+        fsm.transition_to(CELL_STATE_SEALED)
+        assert fsm.state == CELL_STATE_SEALED
+
+    def test_admin_start_migration_from_empty_succeeds(self):
+        # An EMPTY cell can also be migrated (no-op vcore loop) — wildcard
+        # source admits it.
+        fsm = build_cell_fsm()
+        fsm.transition_to(CELL_STATE_MIGRATING)
+        assert fsm.state == CELL_STATE_MIGRATING
 
     def test_admin_path_failed_from_anywhere(self):
         fsm = build_cell_fsm()
@@ -417,17 +448,19 @@ class TestCellStateFSMWired:
         assert cell.state == CellState.IDLE
         assert cell.fsm.state == CELL_STATE_IDLE
 
-    def test_illegal_transition_raises_and_does_not_mutate(self):
+    def test_setter_atomicity_on_fsm_failure(self):
+        # Phase 5.1 wired all CellState members, so no enum value triggers
+        # an FSM rejection through the typed setter. The setter's
+        # atomicity contract ("if FSM raises, _state is not mutated") is
+        # still load-bearing — exercise it via cell.fsm directly with a
+        # bogus state name that the FSM rejects with reason="unknown_state".
         cell = self._make_cell()
-        # Phase 4.3: SPAWNING was removed; SEALED stays as reserved.
-        # SEALED has no incoming edges -- exactly the canary the FSM is
-        # supposed to catch.
+        initial = cell.state
         with pytest.raises(IllegalStateTransition) as excinfo:
-            cell.state = CellState.SEALED
-        assert excinfo.value.reason == "no_edge"
-        # State must not have changed.
-        assert cell.state == CellState.EMPTY
-        assert cell.fsm.state == CELL_STATE_EMPTY
+            cell.fsm.transition_to("NOT_A_REAL_STATE")
+        assert excinfo.value.reason == "unknown_state"
+        # The cell's _state attribute is unchanged regardless.
+        assert cell.state == initial
 
     def test_idempotent_assignment_skips_fsm(self):
         # Old contract: setting state to current value is a no-op. Phase 4

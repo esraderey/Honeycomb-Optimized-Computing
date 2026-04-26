@@ -84,11 +84,30 @@ python -m pip_audit -r requirements.txt
 # Complexity
 python -m radon cc . -a -nc
 python -m radon raw . -s
+
+# Phase 5.5: bench regression check vs the committed baseline. CI runs
+# this exact invocation on every push to ``main`` or ``phase/**``.
+# ``--benchmark-warmup=on`` + ``--benchmark-min-time=0.5`` reduce the
+# noise floor on sub-microsecond benches (see snapshot/bench_baseline.txt
+# for the captured per-bench means).
+python -m pytest benchmarks/ \
+    --benchmark-only \
+    --benchmark-json=snapshot/bench_current.json \
+    --benchmark-warmup=on \
+    --benchmark-min-time=0.5 \
+    -q
+
+# Compare against snapshot/bench_baseline.json. Fail if any benchmark
+# regressed > 10% on the mean (CI threshold).
+python scripts/compare_bench.py \
+    snapshot/bench_baseline.json \
+    snapshot/bench_current.json \
+    --threshold 10.0
 ```
 
 All of the above run automatically on every PR via GitHub Actions
 (`.github/workflows/lint.yml`, `.github/workflows/security.yml`,
-`.github/workflows/test.yml`).
+`.github/workflows/test.yml`, `.github/workflows/bench.yml`).
 
 ## Making a change
 

@@ -783,16 +783,14 @@ class TestHocIntegration:
     """End-to-end check that choreo, run against the HOC repo it lives in,
     produces exactly the findings documented in the current closure.
 
-    Phase 4.3 cleanup status:
+    Phase 5.2b cleanup status:
 
     - **0 errors** -- no undocumented mutations.
-    - **1 warning** (down from 2 in Phase 4.2):
-        - 2 dead states in CellState (MIGRATING, SEALED) -- both
-          reserved for Phase 5 wire-up. SPAWNING and OVERLOADED were
-          removed; ASSIGNED was removed from TaskState (so no
-          enum_extra_state finding anymore).
-    - **3 info**: PheromoneDeposit / QueenSuccession / FailoverFlow
-      remain declarative-only until Phase 5.
+    - **0 warnings** -- MIGRATING / SEALED wired in Phase 5.1.
+    - **0 info** -- all 5 FSMs are now wired (CellState 5.1,
+      FailoverFlow 5.2c, PheromoneDeposit 5.2a, QueenSuccession 5.2b,
+      TaskLifecycle stayed wired since Phase 4.1). Phase 5.6 can flip
+      ``--strict`` in CI.
     """
 
     def test_hoc_smoke(self):
@@ -820,23 +818,16 @@ class TestHocIntegration:
             by_kind.setdefault(f.kind, []).append(f)
 
         # Expected structure (exact counts, validated against the Phase
-        # 4.3 wire-up state of HOC).
+        # 5.1 wire-up state of HOC).
         assert (
             "undocumented_mutation" not in by_kind
         ), f"Unexpected undocumented mutations: {by_kind.get('undocumented_mutation')}"
 
-        assert (
-            len(by_kind.get("dead_state", [])) == 1
-        ), "Expected exactly one dead_state finding (CellState reserved members reported as a single batch)"
-        cell_dead = by_kind["dead_state"][0]
-        assert cell_dead.fsm == "CellState"
-        # Phase 4.3 reduced the dead set to only MIGRATING and SEALED.
-        for dead in ("MIGRATING", "SEALED"):
-            assert dead in cell_dead.message
-        for removed in ("SPAWNING", "OVERLOADED"):
-            assert (
-                removed not in cell_dead.message
-            ), f"{removed} should have been removed in Phase 4.3"
+        # Phase 5.1: MIGRATING + SEALED wired -> no dead_state findings.
+        assert "dead_state" not in by_kind, (
+            f"Phase 5.1 wired MIGRATING and SEALED, no dead_state findings expected: "
+            f"{by_kind.get('dead_state')}"
+        )
 
         # Phase 4.3 removed TaskState.ASSIGNED entirely, so the
         # enum_extra_state finding from Phase 4.1/4.2 should be gone.
@@ -847,4 +838,7 @@ class TestHocIntegration:
 
         decl = by_kind.get("declarative_only", [])
         decl_names = {f.fsm for f in decl}
-        assert decl_names == {"PheromoneDeposit", "QueenSuccession", "FailoverFlow"}
+        # Phase 5.2b wired QueenSuccession via the ``_succession_state``
+        # wrapper. All 5 FSMs are now wired (TaskLifecycle stayed
+        # wired since Phase 4.1).
+        assert decl_names == set()

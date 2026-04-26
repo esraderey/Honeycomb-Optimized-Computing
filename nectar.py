@@ -115,6 +115,36 @@ class PheromoneType(Enum):
         return rates.get(self, 0.1)
 
 
+class PheromonePhase(Enum):
+    """Phase 5.2a: lifecycle phase of a :class:`PheromoneDeposit`.
+
+    Mirrors the states of the PheromoneDeposit FSM in
+    :mod:`hoc.state_machines.pheromone_fsm`. Per the perf budget
+    documented in ADR-007 (and re-stated in Phase 5's brief), this is a
+    **static-only** wire-up: ``PheromoneDeposit`` carries a ``state``
+    field that ``PheromoneTrail.evaporate`` and ``diffuse_to_neighbors``
+    update inside their existing loops, but no per-instance FSM is
+    allocated and no runtime guard validation happens. The FSM in
+    ``state_machines/`` remains the documentation source of truth and
+    the property-test target.
+
+    Values are the FSM state strings so a future runtime wire-up can use
+    ``transition_to(phase.value)`` if performance ever tolerates it.
+    """
+
+    FRESH = "FRESH"
+    DECAYING = "DECAYING"
+    DIFFUSING = "DIFFUSING"
+    EVAPORATED = "EVAPORATED"
+
+
+# Phase 5.2a: age boundary between FRESH and DECAYING. Must match the
+# default in ``hoc.state_machines.pheromone_fsm.DEFAULT_FRESHNESS_WINDOW``
+# (kept duplicated to avoid importing from state_machines in this hot
+# module — the constant is small and unlikely to drift).
+PHEROMONE_FRESHNESS_WINDOW: float = 5.0
+
+
 @dataclass
 class PheromoneDeposit:
     """
@@ -123,6 +153,12 @@ class PheromoneDeposit:
     Phase 2: soporta firma HMAC-SHA256 sobre los campos de identidad
     inmutables (``ptype``, ``source``, timestamp original). ``intensity``
     NO forma parte del HMAC porque varía con deposits, decay y diffusion.
+
+    Phase 5.2a: el campo ``state`` mantiene la fase del lifecycle
+    (FRESH/DECAYING/DIFFUSING/EVAPORATED). Set por
+    ``PheromoneTrail.evaporate`` y ``diffuse_to_neighbors``; no entra
+    por la FSM en runtime — es un mirror del estado real para
+    observabilidad + detección estática vía choreo.
     """
 
     ptype: PheromoneType
@@ -131,6 +167,10 @@ class PheromoneDeposit:
     source: HexCoord | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     signature: bytes | None = None  # HMAC-SHA256 sobre identity fields
+    # Phase 5.2a: lifecycle phase mirror. Default FRESH; transitions
+    # happen in PheromoneTrail's evaporate/diffuse loops without
+    # per-instance FSM allocation (perf-critical path).
+    state: PheromonePhase = PheromonePhase.FRESH
 
     def decay(self, elapsed: float) -> float:
         """Aplica decaimiento basado en tiempo transcurrido."""
@@ -312,6 +352,12 @@ class PheromoneTrail:
                     source=source,
                     metadata={},
                 )
+                # Phase 5.2a: explicit FRESH assignment (the dataclass
+                # default is FRESH already, but choreo's walker only
+                # detects ``obj.state = ENUM.MEMBER`` Assign nodes and
+                # not AnnAssign defaults — this statement makes FRESH a
+                # targeted state in the static analysis).
+                new_deposit.state = PheromonePhase.FRESH
                 if metadata:
                     self._merge_metadata_bounded(new_deposit, metadata)
                 # Phase 2: firmar en creación. Verificaciones downstream
@@ -439,9 +485,17 @@ class PheromoneTrail:
                     ):
                         deposit.intensity *= 0.5
 
-                    # Marcar para eliminación si es muy bajo
+                    # Phase 5.2a: lifecycle phase mirror. Below the cleanup
+                    # threshold the deposit is queued for removal — mark
+                    # EVAPORATED (terminal). Once age crosses the freshness
+                    # window we leave FRESH for DECAYING. The two attribute
+                    # writes per deposit are the entire perf budget for
+                    # this wire-up; no FSM is consulted.
                     if deposit.intensity < self.CLEANUP_THRESHOLD:
+                        deposit.state = PheromonePhase.EVAPORATED
                         dead_types.append(ptype)
+                    elif elapsed > PHEROMONE_FRESHNESS_WINDOW:
+                        deposit.state = PheromonePhase.DECAYING
 
                 for ptype in dead_types:
                     del deposits[ptype]
@@ -487,6 +541,13 @@ class PheromoneTrail:
                 for ptype, deposit in list(deposits.items()):
                     if deposit.intensity < threshold:
                         continue
+                    # Phase 5.2a: transient DIFFUSING during the spread,
+                    # then back to DECAYING once the deposit's intensity
+                    # has been fanned out. The original deposit's intensity
+                    # is unchanged here (the spread happens via deposit()
+                    # below on neighbours), so DECAYING is the right
+                    # post-spread phase.
+                    deposit.state = PheromonePhase.DIFFUSING
                     amount = deposit.intensity * spread_per_neighbor
                     for direction in HexDirection:
                         neighbor_coord = coord.neighbor(direction)
@@ -501,6 +562,7 @@ class PheromoneTrail:
                                 None,
                             )
                         )
+                    deposit.state = PheromonePhase.DECAYING
             for coord, ptype, intensity, source, meta in new_deposits:
                 self.deposit(coord, ptype, intensity, source=source, metadata=meta)
         return len(new_deposits)

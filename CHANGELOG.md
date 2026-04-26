@@ -8,6 +8,199 @@ y este proyecto adhiere a [Semantic Versioning](https://semver.org/lang/es/).
 
 ---
 
+## [1.5.0-phase05] — 2026-04-26
+
+**Cierre de Fase 5 — Observabilidad + full FSM wire-up.** 804 tests
+pasando (+71 vs Phase 4.3: 28 wire-up tests + 9 logging + 28 phase
+tests + extras). Las **5 FSMs ahora wireadas** (vs 2 al inicio):
+CellState ya estaba; Phase 4.3 reservó MIGRATING y SEALED y Phase 5.1
+las wireó (`CellFailover._migrate_work` + nuevo `HoneycombCell.seal()`);
+FailoverFlow / PheromoneDeposit / QueenSuccession upgraded de
+declarative-only a wired (5.2c / 5.2a / 5.2b). `choreo check --strict`
+ahora reporta **0 errors / 0 warnings / 0 info** y el CI lo enforce.
+Logging estructurado vía `structlog` (5.3) emite eventos JSON-
+serializables en cada cell state transition, seal, migración y
+elección. Bench baseline reproducible (5.5) más nuevo job CI
+`bench-regression` cierra Gap 3 de Phase 4. `structlog>=25.0` agregado
+como runtime dep. Bandit/pip-audit/ruff/black/mypy todos limpios.
+Cobertura global subió a **79.41%** (+~3 pts vs Phase 4.3).
+
+Reporte completo: [snapshot/PHASE_05_CLOSURE.md](snapshot/PHASE_05_CLOSURE.md).
+
+### Added
+
+#### Runtime dependency
+- `structlog>=25.0.0` pinneado en `requirements.txt` y declarado en
+  `pyproject.toml [project].dependencies`. Provee el motor de logging
+  estructurado (~70 KB, MIT, zero transitive deps). Aislado tras
+  `hoc.core.observability` — única importación de structlog en todo
+  el repo. Ver [ADR-011](docs/adr/ADR-011-observability-stack.md).
+
+#### `hoc.core.observability` módulo (Phase 5.3)
+- `configure_logging(json: bool = False, level: int = INFO)` — call
+  once at startup. JSON output para producción, ConsoleRenderer
+  colored para dev.
+- `get_event_logger(name="hoc.events")` — devuelve un structlog
+  `BoundLogger` para el canal especificado.
+- `EVENT_LOGGER_NAME = "hoc.events"` — constante para filtrado.
+- `log_cell_state_transition(coord, from_state, to_state)` — helper
+  para mantener el field-name schema estable.
+- 6 eventos cableados: `cell.state_changed` (set_state),
+  `cell.sealed` (seal), `failover.migrate_started` /
+  `migrate_completed` (migrate_work), `election.started` /
+  `election.completed` (elect_new_queen).
+
+#### Phase 5.1 — `CellState.MIGRATING` + `SEALED` wired
+- `state_machines/cell_fsm.py` agrega 2 wildcard transitions:
+  `WILDCARD → MIGRATING` (trigger=`admin_start_migration`) y
+  `WILDCARD → SEALED` (trigger=`admin_seal`).
+- `core/cells_base.py:HoneycombCell.seal(reason="...")` — nuevo
+  método para graceful shutdown. Drains vCores, refuses new tasks
+  (`add_vcore` rechaza con SEALED), persiste métricas finales en
+  log estructurado, transiciona a SEALED. Idempotente; refuses
+  sealar una FAILED.
+- `resilience.py:CellFailover._migrate_work` — `source.state =
+  MIGRATING` antes del bucle; rollback de estado al original en
+  excepción. Cierra commitment de [ADR-010](docs/adr/ADR-010-dead-enum-cleanup.md).
+
+#### Phase 5.2c — `FailoverFlow` FSM wired
+- Nuevo `FailoverPhase` enum en `resilience.py`
+  (HEALTHY/DEGRADED/MIGRATING/RECOVERED/LOST).
+- `_FailoverCellState` dataclass wrapper (state + per-coord FSM
+  instance). Wrapper exists para que el walker de choreo detecte
+  `obj.state = ENUM.MEMBER`.
+- `CellFailover._per_cell_failover: dict[HexCoord, _FailoverCellState]`
+  + `_set_failover_phase` helper + público `get_failover_phase(coord)`.
+- `_migrate_work` walks HEALTHY → DEGRADED → MIGRATING → RECOVERED;
+  excepción dispara `tramoya.undo()` reverting MIGRATING → DEGRADED.
+- `mark_recovered` avanza RECOVERED → HEALTHY (stabilized).
+- `state_machines/failover_fsm.py` agrega `enum_name="FailoverPhase"`.
+
+#### Phase 5.2a — `PheromoneDeposit` FSM wired (static-only)
+- Nuevo `PheromonePhase` enum en `nectar.py` (FRESH/DECAYING/
+  DIFFUSING/EVAPORATED).
+- `PheromoneDeposit.state: PheromonePhase = FRESH` field.
+  Mutado por `evaporate` (DECAYING/EVAPORATED por age/intensity) y
+  `diffuse_to_neighbors` (DIFFUSING transient → DECAYING). NO
+  per-instance FSM (perf budget).
+- Bench: `test_nectar_flow_tick` +1.4% (dentro de `<3%` budget).
+- `state_machines/pheromone_fsm.py` agrega
+  `enum_name="PheromonePhase"`.
+
+#### Phase 5.2b — `QueenSuccession` FSM wired (security-critical)
+- Nuevo `SuccessionPhase` enum en `resilience.py` (STABLE/DETECTING/
+  NOMINATING/VOTING/ELECTED/FAILED).
+- `_SuccessionState` dataclass wrapper (state + history list).
+- `QueenSuccession._succession_state` + `_set_phase` con if/elif
+  chain por miembro.
+- `elect_new_queen` walks STABLE → DETECTING → NOMINATING → VOTING
+  → ELECTED → STABLE en éxito; failure paths landean en FAILED.
+- `_conduct_election` muta VOTING al inicio y ELECTED|FAILED según
+  outcome del tally.
+- Pública: `succ.phase` y `succ.phase_history` para observability.
+- `state_machines/succession_fsm.py` agrega
+  `enum_name="SuccessionPhase"`.
+- **Anti-regresión**: la lógica de `_tally_votes` y `_term_number`
+  está byte-identical a Phase 4.3. Los 7 tests
+  `TestQuorumSignedVotes` siguen verdes sin modificación.
+
+#### Phase 5.5 — bench baseline + regression CI
+- `snapshot/bench_baseline.json` (condensed, 5.5 KB) captured desde
+  main pre-Phase-5.
+- `scripts/compare_bench.py` toma dos snapshots condensados y
+  reporta % diff por benchmark contra threshold (default 10%).
+- `.github/workflows/bench.yml` nuevo job CI: captura bench actual
+  con `--benchmark-warmup=on --benchmark-min-time=0.5`, condensa,
+  compara, falla si regresión >10%. Comando documentado en
+  `CONTRIBUTING.md`.
+- Cierra Gap 3 de Phase 4 closure.
+
+#### Documentation
+- **ADR-011** — Observability stack (structlog + Prometheus deferred
+  + dashboard deferred).
+- **ADR-012** — `choreo --strict` flip mode.
+
+#### Tests (804 pasando, +71)
+- `tests/test_cell_seal.py` (12) — graceful shutdown.
+- `tests/test_failover_phase.py` (10) — FailoverFlow wire-up + undo.
+- `tests/test_pheromone_state.py` (9) — PheromoneDeposit phases.
+- `tests/test_succession_phase.py` (15) — SuccessionPhase progression.
+- `tests/test_logging.py` (9) — structlog wire-up.
+- `tests/test_resilience.py::TestCellFailover` +3 — MIGRATING wire-up.
+- `tests/test_state_machines.py` +4 — admin triggers nuevos.
+- `tests/test_state_machines_property.py` — exempt set vacío para
+  CellState.
+- `tests/test_choreo.py` — actualizado a 0/0/0.
+
+### Changed
+
+#### Phase 5.6 — `choreo check --strict` enforced
+- `.github/workflows/lint.yml` `choreo-static-check` actualizado de
+  `python -m choreo check` a `python -m choreo check --strict`.
+- `--strict` raises warnings y info a errors; cualquier futuro PR
+  con dead state, enum-extra, o declarative-only FSM rompe el build.
+- Local invocation en `CONTRIBUTING.md` follows.
+- Cierra commitment de ADR-008 + ADR-010 + ADR-012.
+
+#### `pyproject.toml`
+- `[project].dependencies` += `"structlog>=25.0.0"`.
+- `[[tool.mypy.overrides]]` external block: `structlog, structlog.*`
+  con `ignore_missing_imports`.
+
+#### `__init__.py`
+- Re-export `configure_logging`, `get_event_logger`,
+  `EVENT_LOGGER_NAME` desde `hoc.core.observability`.
+
+### Deferred to Phase 5.x followup / Phase 6
+
+#### 5.4 — Métricas Prometheus
+Brief explícitamente flagged opcional. Diferido por budget de sesión.
+Spec intacta: `prometheus_client` runtime dep, 5 collectors, HTTP
+`/metrics` endpoint, `hoc-cli serve-metrics` entry point.
+Mitigación interim: structured logs de 5.3 cubren las series que
+una collector consumiría (vía promtail / fluent-bit log-derived
+metrics).
+
+#### 5.7 — Dashboard
+Brief explícitamente opcional. Diferido a Phase 6 alongside
+persistence work.
+
+#### Cobertura objetivo 80% global
+Cierre de Phase 5 a 79.41% (-0.59 pts del target). `bridge.py`
+permanece en 56% (Gap 4 desde Phase 4). Diferido a Phase 5.x test
+boost o Phase 6 split de bridge.
+
+#### Bench `test_grid_creation` regresión +25.88%
+Causa: FSM allocation per-cell + nuevos campos. Aceptable pero
+documentado para optimizar (e.g. class-level shared FSM en lugar de
+per-instance).
+
+### choreo report — Phase 4.3 vs Phase 5
+
+| | Phase 4.3 | Phase 5 |
+|---|---|---|
+| Errors | 0 | 0 |
+| Warnings | 1 (CellState dead: MIGRATING + SEALED) | **0** ✅ |
+| Info | 3 (Pheromone, Succession, Failover declarative-only) | **0** ✅ |
+| Strict mode in CI | not enforced | **enforced** ✅ |
+
+### Audits
+
+- ruff: 0 errores
+- black: 0 archivos a reformatear
+- mypy `python -m mypy .`: 0 errores
+- mypy `python -m mypy --explicit-package-bases state_machines/*.py`: 0
+- bandit: **0 / 0 / 0** (HIGH / MEDIUM / LOW), 11,728 LOC scanned, 42 archivos
+- pip-audit (runtime + dev): clean
+- radon CC: average **C (13.3)** — sin regresión vs Phase 4.3
+- pytest: **804 / 804 passing**
+- coverage: **79.41%** (vs target 80%, -0.59 pts diferido)
+- choreo `--strict`: 0/0/0 ✅
+
+[1.5.0-phase05]: https://github.com/esraderey/Honeycomb-Optimized-Computing/releases/tag/v1.5.0-phase05
+
+---
+
 ## [1.4.3-phase04.3] — 2026-04-25
 
 **Cierre de Fase 4.3 — Dead enum cleanup (B12-bis + B12-ter resueltos
