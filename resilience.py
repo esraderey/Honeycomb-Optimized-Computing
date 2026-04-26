@@ -315,25 +315,50 @@ class CellFailover:
         return None
 
     def _migrate_work(self, source: HexCoord, target: HexCoord) -> bool:
-        """Migra el trabajo de una celda a otra."""
+        """Migra el trabajo de una celda a otra.
+
+        Phase 5.1: la celda origen pasa a ``CellState.MIGRATING`` antes
+        del bucle de migración para que un operador pueda observar el
+        failover en curso. En el camino feliz la celda termina en
+        ``FAILED`` (mismo contrato que pre-Phase-5). En caso de excepción
+        se intenta restaurar el estado original (rollback de estado, no
+        de vCores — el rollback completo de vCores es la promesa de
+        ``FailoverFlow.undo`` en Phase 5.2c).
+        """
         source_cell = self.grid.get_cell(source)
         target_cell = self.grid.get_cell(target)
 
         if not source_cell or not target_cell:
             return False
 
+        # Phase 5.1: capture original state for rollback. Done before
+        # mutating so even an exception during the MIGRATING transition
+        # leaves us with the right value to restore.
+        original_state = source_cell.state
+
         try:
+            # Phase 5.1: mark MIGRATING for in-flight observability.
+            source_cell.state = CellState.MIGRATING
+
             # Migrar vCores
             for vcore in list(source_cell._vcores):
                 if target_cell.add_vcore(vcore):
                     source_cell.remove_vcore(vcore)
 
-            # Actualizar estado
+            # Actualizar estado: éxito → la celda origen muere como antes.
             source_cell.state = CellState.FAILED
 
             return True
         except Exception as e:
             logger.error(f"Migration error: {sanitize_error(e)}")
+            # Phase 5.1: rollback de estado. Ignoramos cualquier error de
+            # FSM aquí — los wildcards admiten el camino, pero ser
+            # defensivo evita que un secondary fallback rompa la
+            # contención del except principal.
+            try:
+                source_cell.state = original_state
+            except Exception as rb_exc:  # pragma: no cover
+                logger.error(f"Migration rollback also failed: {sanitize_error(rb_exc)}")
             return False
 
     def mark_recovered(self, coord: HexCoord) -> bool:

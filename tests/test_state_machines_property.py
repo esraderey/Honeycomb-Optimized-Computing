@@ -233,15 +233,12 @@ def test_no_orphan_states():
     transition (source or dest), or be the initial state — otherwise it's
     an orphan that can never be reached or left.
 
-    Exception: dead states like CellState.{SPAWNING, MIGRATING, SEALED,
-    OVERLOADED} are intentionally orphaned (B12). They count as initial-
-    only-not-reachable; the test exempts them by name.
+    Phase 4.3 removed SPAWNING and OVERLOADED. Phase 5.1 wired MIGRATING
+    (admin_start_migration in CellFailover._migrate_work) and SEALED
+    (admin_seal in HoneycombCell.seal()). All FSMs are now orphan-free.
     """
     fsms = {
-        "CellState": (
-            build_cell_fsm(),
-            {"SPAWNING", "MIGRATING", "SEALED", "OVERLOADED"},
-        ),
+        "CellState": (build_cell_fsm(), set()),
         "PheromoneDeposit": (build_pheromone_fsm(), set()),
         "TaskLifecycle": (build_task_fsm(), set()),
         "QueenSuccession": (build_succession_fsm(), set()),

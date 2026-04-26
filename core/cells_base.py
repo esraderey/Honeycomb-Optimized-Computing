@@ -291,8 +291,16 @@ class HoneycombCell:
     # ─────────────────────────────────────────────────────────────────────────
 
     def add_vcore(self, vcore: Any) -> bool:
-        """Añade un vCore a la celda."""
+        """Añade un vCore a la celda.
+
+        Phase 5.1: una celda SEALED rechaza nuevos vCores. ``seal()`` es
+        el path de graceful shutdown — aceptar trabajo nuevo invalidaría
+        la promesa operacional ("drained, refusing tasks").
+        """
         with self._rw_lock.write_lock():
+            if self._state == CellState.SEALED:
+                return False
+
             if len(self._vcores) >= self._config.vcores_per_cell:
                 return False
 
@@ -495,6 +503,55 @@ class HoneycombCell:
 
             self._event_bus.publish(Event(type=EventType.CELL_RECOVERED, source=self, data={}))
 
+            return True
+
+    def seal(self, reason: str = "graceful_shutdown") -> bool:
+        """Phase 5.1: graceful shutdown of this cell.
+
+        Drains all vCores, refuses new tasks, captures final metrics in the
+        log, and transitions to ``SEALED``. SEALED is intended to be
+        terminal — the production paths never revive a sealed cell — but
+        the FSM keeps the wildcard admin transitions available for tests
+        and operator overrides.
+
+        Idempotent: returns ``False`` if the cell is already sealed.
+        Refuses to seal a ``FAILED`` cell (use ``recover()`` first).
+        Returns ``True`` on a successful seal.
+        """
+        with self._rw_lock.write_lock():
+            if self._state == CellState.SEALED:
+                return False
+            if self._state == CellState.FAILED:
+                return False
+
+            # Drain vCores. The cells lose their work; we do not migrate
+            # here — graceful shutdown is opt-in and the operator is
+            # expected to have rebalanced ahead of the call.
+            drained_vcores = len(self._vcores)
+            self._vcores = []
+            self._update_load()
+
+            # Capture final metrics for the audit log. We log rather than
+            # publish a dedicated event so the seal() reason stays paired
+            # with the snapshot in the same log line.
+            final_metrics = {
+                "ticks_processed": self._ticks_processed,
+                "error_count": self._error_count,
+                "pheromone_total": self._pheromone_field.total_intensity,
+                "vcores_drained": drained_vcores,
+                "age_seconds": round(time.time() - self._creation_time, 3),
+            }
+
+            # Mutate via _set_state so the FSM validates the admin_seal
+            # transition and the CELL_STATE_CHANGED event fires.
+            self._set_state(CellState.SEALED)
+
+            logger.info(
+                "Cell %s sealed: reason=%s metrics=%s",
+                self.coord,
+                reason,
+                final_metrics,
+            )
             return True
 
     # ─────────────────────────────────────────────────────────────────────────

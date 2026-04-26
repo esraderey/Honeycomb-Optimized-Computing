@@ -64,6 +64,20 @@ stateDiagram-v2
     MIGRATING --> ACTIVE : admin_force_active
     RECOVERING --> ACTIVE : admin_force_active
     SEALED --> ACTIVE : admin_force_active
+    ACTIVE --> MIGRATING : admin_start_migration
+    EMPTY --> MIGRATING : admin_start_migration
+    FAILED --> MIGRATING : admin_start_migration
+    IDLE --> MIGRATING : admin_start_migration
+    MIGRATING --> MIGRATING : admin_start_migration
+    RECOVERING --> MIGRATING : admin_start_migration
+    SEALED --> MIGRATING : admin_start_migration
+    ACTIVE --> SEALED : admin_seal
+    EMPTY --> SEALED : admin_seal
+    FAILED --> SEALED : admin_seal
+    IDLE --> SEALED : admin_seal
+    MIGRATING --> SEALED : admin_seal
+    RECOVERING --> SEALED : admin_seal
+    SEALED --> SEALED : admin_seal
 ```
 
 ## PheromoneDeposit

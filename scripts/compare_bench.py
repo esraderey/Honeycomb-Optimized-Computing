@@ -80,9 +80,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Only in current (new since baseline): {only_current}")
 
     if regressions:
-        print(
-            f"\nFAIL: {len(regressions)} benchmark(s) regressed > {args.threshold:.1f}%:"
-        )
+        print(f"\nFAIL: {len(regressions)} benchmark(s) regressed > {args.threshold:.1f}%:")
         for name, diff in regressions:
             print(f"  {name}: +{diff:.2f}%")
         return 1

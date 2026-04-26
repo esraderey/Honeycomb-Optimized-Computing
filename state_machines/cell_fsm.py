@@ -1,6 +1,6 @@
 """
-CellState FSM (Phase 4.3)
-=========================
+CellState FSM (Phase 4.3 + Phase 5.1)
+=====================================
 
 Formal state machine for :class:`hoc.core.cells_base.HoneycombCell`. Each
 ``HoneycombCell`` instance owns one :class:`HocStateMachine` built by
@@ -12,18 +12,29 @@ Cardinal invariant
 This FSM **observes** the transitions HOC already executes — it is **not**
 the aspirational lifecycle from the Phase 4 brief
 (``INITIALIZING → IDLE → BUSY → DEGRADED → FAILED → RECOVERING``). The
-real ``CellState`` enum (declared in ``core/cells_base.py``) has 9 values:
-``EMPTY, IDLE, ACTIVE, SPAWNING, MIGRATING, FAILED, RECOVERING, SEALED,
-OVERLOADED``. The brief's ``INITIALIZING`` maps to ``EMPTY``, ``BUSY`` to
-``ACTIVE``, and the brief's ``DEGRADED`` step does not exist — production
-code goes ``ACTIVE → FAILED`` directly when the circuit breaker opens.
+real ``CellState`` enum (declared in ``core/cells_base.py``) has 7 values
+after Phase 4.3 cleanup (B12-ter eliminated SPAWNING and OVERLOADED):
+``EMPTY, IDLE, ACTIVE, MIGRATING, FAILED, RECOVERING, SEALED``. The
+brief's ``INITIALIZING`` maps to ``EMPTY``, ``BUSY`` to ``ACTIVE``, and
+the brief's ``DEGRADED`` step does not exist — production code goes
+``ACTIVE → FAILED`` directly when the circuit breaker opens.
 
-Four states have **no incoming transitions** in current production code:
-``SPAWNING``, ``MIGRATING``, ``SEALED``, ``OVERLOADED``. They are declared
-in the enum and rendered by ``metrics.visualization`` but never assigned.
-The FSM keeps them as legal nodes (the enum is the source of truth) but
-attempting to transition into them raises :class:`IllegalStateTransition`.
-This is reported as **B12** in the Phase 4 closure.
+Phase 5.1 closed the dead-state gap left after Phase 4.3:
+
+- ``MIGRATING`` is now wired in :meth:`hoc.resilience.CellFailover._migrate_work`
+  via the wildcard admin trigger ``admin_start_migration``. Operators can
+  observe in-flight migrations through the cell state instead of inferring
+  them from log lines.
+- ``SEALED`` is now wired in :meth:`hoc.core.cells_base.HoneycombCell.seal`
+  via the wildcard admin trigger ``admin_seal``. ``seal()`` is the
+  graceful-shutdown path: vCores are drained, new tasks are refused, and
+  the cell terminates without producing FAILED noise.
+
+After Phase 5.1, no ``CellState`` member is dead (``choreo check`` reports
+zero ``dead_state`` warnings for this FSM). SEALED is intended to be
+terminal; the wildcard admin transitions still let operators force a
+sealed cell into other states for testing or recovery, but production
+callers should treat the seal as final.
 
 Transition catalog
 ------------------
@@ -37,12 +48,13 @@ The FSM has two kinds of transitions:
 2. **Admin / failover (wildcard source)** — invoked by surrounding
    subsystems that need to force a cell into a particular state regardless
    of where it was: :class:`hoc.resilience.CellFailover` (marks source
-   ``FAILED`` after migration, marks target ``IDLE`` after recovery),
+   ``MIGRATING`` at migration start and ``FAILED`` after success),
    :class:`hoc.resilience.QueenSuccession` (marks the deposed queen
    ``FAILED``), :class:`hoc.resilience.SwarmRecovery._restart_cell`,
    :class:`hoc.resilience.SwarmRecovery._rebuild_cell` (marks any cell
-   ``RECOVERING`` then ``EMPTY`` or ``IDLE``), and tests that inject
-   faults by writing ``cell.state = CellState.FAILED`` directly.
+   ``RECOVERING`` then ``EMPTY`` or ``IDLE``), :meth:`HoneycombCell.seal`
+   (marks the cell ``SEALED`` for graceful shutdown), and tests that
+   inject faults by writing ``cell.state = CellState.FAILED`` directly.
 
 Both kinds coexist in the same FSM. The destination-driven
 :meth:`HocStateMachine.transition_to` resolves the right trigger by
@@ -67,13 +79,14 @@ from .base import WILDCARD, HocStateMachine, HocTransition
 CELL_STATE_EMPTY = "EMPTY"
 CELL_STATE_ACTIVE = "ACTIVE"
 CELL_STATE_IDLE = "IDLE"
-# Reserved (B12-ter survivors): MIGRATING and SEALED stay in the FSM
-# even though no current call-site targets them. Phase 5 wire-up:
-# MIGRATING during CellFailover.migrate_cell, SEALED for graceful
-# shutdown.
+# Phase 5.1: MIGRATING is now wired in CellFailover._migrate_work for
+# observability of in-flight migrations (admin_start_migration trigger).
 CELL_STATE_MIGRATING = "MIGRATING"
 CELL_STATE_FAILED = "FAILED"
 CELL_STATE_RECOVERING = "RECOVERING"
+# Phase 5.1: SEALED is now wired in HoneycombCell.seal() for graceful
+# shutdown (admin_seal trigger). Intended to be terminal in production
+# paths.
 CELL_STATE_SEALED = "SEALED"
 
 ALL_CELL_STATES: tuple[str, ...] = (
@@ -144,6 +157,19 @@ def build_cell_fsm() -> HocStateMachine:
         # never sets ACTIVE directly — only via execute_tick (already
         # covered by tick_started above).
         HocTransition(WILDCARD, CELL_STATE_ACTIVE, trigger="admin_force_active"),
+        # Phase 5.1: CellFailover._migrate_work marks the source cell
+        # MIGRATING at the start of a migration so operators can observe
+        # in-flight migrations. Wildcard source because the cell may be
+        # ACTIVE, IDLE, or in any other live state when the failover
+        # handler picks it up.
+        HocTransition(WILDCARD, CELL_STATE_MIGRATING, trigger="admin_start_migration"),
+        # Phase 5.1: HoneycombCell.seal() marks the cell SEALED for
+        # graceful shutdown. Wildcard source because seal() is callable
+        # from any non-FAILED state (the seal() implementation refuses to
+        # seal a FAILED cell). SEALED is intended to be terminal in
+        # production paths; admin overrides remain possible via the
+        # other wildcards above for tests/operator recovery.
+        HocTransition(WILDCARD, CELL_STATE_SEALED, trigger="admin_seal"),
     ]
 
     return HocStateMachine(
