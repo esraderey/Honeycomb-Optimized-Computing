@@ -481,9 +481,47 @@ class HoneycombGrid:
         if self._health_monitor.should_check():
             self._health_monitor.check_health()
 
+        # Phase 6.4: auto-checkpoint cada N ticks si está configurado.
+        # The atomic write inside ``checkpoint`` ensures a crash during
+        # this call leaves either the prior snapshot or no snapshot at
+        # ``checkpoint_path`` — never a torn file. We capture the
+        # checkpoint AFTER the tick counter has advanced so the
+        # snapshot reflects post-tick state (i.e. restoring will
+        # resume on the *next* tick, not redo the one we just ran).
+        interval = self.config.checkpoint_interval_ticks
+        if (
+            interval is not None
+            and self.config.checkpoint_path
+            and self._tick_count % interval == 0
+        ):
+            self._auto_checkpoint()
+
         self._event_bus.publish(Event(type=EventType.GRID_TICK_END, source=self, data=results))
 
         return results
+
+    def _auto_checkpoint(self) -> None:
+        """Phase 6.4: best-effort auto-checkpoint inside ``tick()``.
+
+        Errors during checkpointing are logged and swallowed — a
+        failed snapshot must not abort the live tick. The caller
+        keeps running; the next interval tick gets another shot.
+        """
+        from pathlib import Path as _Path
+
+        path = _Path(self.config.checkpoint_path or "")
+        try:
+            self.checkpoint(path, compress=self.config.checkpoint_compress)
+        except Exception as exc:
+            # ``sanitize_error`` lives in security.py and respects HOC_DEBUG.
+            from ..security import sanitize_error
+
+            logger.error(
+                "auto-checkpoint to %s failed at tick %d: %s",
+                path,
+                self._tick_count,
+                sanitize_error(exc),
+            )
 
     def _parallel_tick(self) -> dict[str, int]:
         processed = 0
