@@ -73,13 +73,23 @@ dev = [
 
 [tool.setuptools]
 package-dir = {hoc = "."}
-packages = ["hoc", "hoc.core", "hoc.metrics", "hoc.state_machines", "hoc.bridge"]
+packages = [
+    "hoc",
+    "hoc.core",
+    "hoc.metrics",
+    "hoc.state_machines",
+    "hoc.bridge",
+    "hoc.storage",
+]
 # Phase 5.3: ``observability`` lives inside ``hoc.core`` (as
 # ``core/observability.py``), so it ships with the existing
 # ``hoc.core`` package — no separate entry needed here.
 # Phase 6.5: legacy ``bridge.py`` (886 LOC) split into ``hoc.bridge``
 # subpackage (converters / mappers / adapters), same pattern as Phase 3
 # core/metrics splits.
+# Phase 6.1: new ``hoc.storage`` subpackage hosts the StorageBackend
+# protocol + MemoryBackend default. Future phases add SQLite / LMDB /
+# S3 / Redis backends without touching the HMAC + mscs framing layer.
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -94,7 +104,7 @@ addopts = "-v --tb=short --import-mode=importlib"
 pythonpath = ["."]
 # Don't descend into these dirs during collection. Prevents pytest from
 # discovering the package source and trying to treat files there as tests.
-norecursedirs = ["snapshot", "benchmarks", ".hypothesis", ".pytest_cache", "hoc.egg-info", "core", "metrics", "state_machines", "bridge", "docs", ".git", "__pycache__"]
+norecursedirs = ["snapshot", "benchmarks", ".hypothesis", ".pytest_cache", "hoc.egg-info", "core", "metrics", "state_machines", "bridge", "storage", "docs", ".git", "__pycache__"]
 
 [tool.coverage.run]
 source = ["."]
