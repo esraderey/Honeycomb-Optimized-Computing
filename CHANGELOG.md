@@ -8,6 +8,221 @@ y este proyecto adhiere a [Semantic Versioning](https://semver.org/lang/es/).
 
 ---
 
+## [1.6.0-phase06] — 2026-04-27
+
+**Cierre de Fase 6 — Persistencia & Storage.** 961 tests pasando
+(+157 vs Phase 5), cobertura global **83.08 %** (+3.67 pts), bridge
+cobertura sube de 56 % a 96 % por el split (Gap 4 desde Phase 4
+closure cerrado). Nuevo subpaquete `hoc.storage` con
+`StorageBackend` Protocol, `MemoryBackend` default y `SQLiteBackend`
+con WAL + schema versioning + connection-per-thread. `HoneycombGrid`
+puede serializarse a un blob HMAC-signed (encode_blob / decode_blob)
+y reconstruirse desde él, con auto-checkpointing opt-in dentro del
+tick loop. Phase 6.6 cierra la regresión `test_grid_creation` Phase
+5 con un class-level shared FSM en `HoneycombCell` (-66 % vs
+baseline). Phase 6.7 captura el bench baseline en `ubuntu-latest`
+y vuelve la `bench-regression` CI job a hard-fail con threshold
+10 %. Bandit/pip-audit/ruff/black/mypy todos limpios. choreo
+`--strict` 0/0/0 mantenido. Sin nuevas runtime deps (sqlite3 + zlib
+son stdlib).
+
+Reporte completo: [snapshot/PHASE_06_CLOSURE.md](snapshot/PHASE_06_CLOSURE.md).
+
+### Added
+
+#### Phase 6.5 — `hoc.bridge` subpackage (split from `bridge.py`)
+- Legacy `bridge.py` (886 LOC) descompuesto en tres módulos cohesivos
+  siguiendo el patrón Phase 3 (`core.py` → `core/`, `metrics.py` →
+  `metrics/`):
+  - `bridge/converters.py` — HexToCartesian, CartesianToHex.
+  - `bridge/mappers.py` — VCoreProtocol, HypervisorProtocol,
+    NeuralFabricProtocol, VCoreMappingEntry, CellToVCoreMapper,
+    GridToHypervisorMapper.
+  - `bridge/adapters.py` — BridgeConfig, CAMVHoneycombBridge,
+    VentHoneycombAdapter.
+- API pública preservada: `from hoc.bridge import …` y `from hoc
+  import …` siguen funcionando byte-identical.
+- `tests/test_bridge.py` (Phase 1, 7 tests) untouched —
+  anti-regresión.
+- `tests/test_bridge_split.py` (54 tests, nuevo): POINTY_TOP layout,
+  corners + bounding_box, mapper edge cases, todo el
+  `VentHoneycombAdapter` (que estaba a 0 %).
+- Bridge cobertura: 56 % → **96 %** (Gap 4 desde Phase 4 cerrado).
+
+#### Phase 6.7 — CI bench baseline capture + hard-fail
+- `snapshot/bench_baseline_ci.json` capturado vía
+  `workflow_dispatch` desde main commit `38240a7` (post-merge
+  PR #9). Run-id 24956081854. 11 benchmarks, ~8 KB.
+- `.github/workflows/bench.yml`: `continue-on-error: true`
+  removido, threshold `--threshold 10.0`, baseline arg cambia
+  a `bench_baseline_ci.json` para CI.
+- `snapshot/bench_baseline.json` (Windows-derived) preservado
+  untouched para uso local.
+- `CONTRIBUTING.md` actualizado: explica los dos baselines y la
+  receta `gh workflow run + gh run download` para refrescar el
+  baseline CI.
+
+#### Phase 6.6 — Class-level shared FSM en HoneycombCell
+- Nueva `HocStateMachine.is_legal_transition(source, target)` en
+  `state_machines/base.py` — pure structural check sin mutar
+  `_machine.state`.
+- `HoneycombCell._CLASS_FSM: ClassVar[HocStateMachine]` — built
+  once at class definition time. Compartido entre todas las cells.
+- `HoneycombCell._state_history: deque[str]` (slot nuevo, bounded
+  por `_HISTORY_MAXLEN=8`).
+- Slot `_fsm` removido del `__slots__` de `HoneycombCell`.
+- `cell.fsm` ahora retorna un `_CellFsmView` (1-slot proxy con
+  `state` / `history` / `transition_to`).
+- Bench: `test_grid_creation` 1.73 ms → 0.58 ms = **-66.47 %** vs
+  baseline (target era ±5 %, supera por mucho).
+- Ver [ADR-015](docs/adr/ADR-015-class-level-cell-fsm.md).
+
+#### Phase 6.1 — `hoc.storage` subpackage (StorageBackend Protocol)
+- `hoc.storage.StorageBackend` — `Protocol`, `runtime_checkable`.
+  Cinco métodos: `put`, `get`, `delete`, `keys(prefix='')`,
+  `__contains__`. Toda implementación debe ser thread-safe.
+- `hoc.storage.MemoryBackend` — dict-backed default,
+  `threading.RLock`. Preserva pre-Phase-6 behaviour byte-for-byte.
+- `HoneyArchive.__init__(config, base_path=None, backend=None)` —
+  el kwarg `backend` es opcional; `None` construye un fresh
+  `MemoryBackend`.
+- HMAC + mscs framing + zlib compression siguen en la archive
+  layer; el backend solo ve bytes opacos.
+- `tests/test_storage_backend.py` (27 tests, parametrizable por
+  backend).
+- Ver [ADR-013](docs/adr/ADR-013-storage-backend-abstraction.md).
+
+#### Phase 6.2 — `SQLiteBackend`
+- `hoc.storage.SQLiteBackend` — disk-backed `StorageBackend`,
+  stdlib-only (sqlite3).
+- Schema: `honey_archive(key TEXT PRIMARY KEY, value BLOB,
+  created_at REAL, updated_at REAL)` + índice en `created_at` +
+  `_schema_version` table.
+- WAL mode (`PRAGMA journal_mode=WAL` + `synchronous=NORMAL`),
+  auto-skipped para `:memory:`.
+- Connection-per-thread vía `threading.local`.
+- `ON CONFLICT(key) DO UPDATE` para `put` (atomic overwrite).
+- `LIKE` prefix scan con escape (`%`, `_`, `\`).
+- Schema versioning + migration runner (`_run_migrations_to_current`).
+- `tests/test_storage_sqlite.py` (25 tests, nuevo).
+- `tests/test_storage_backend.py` parametrize fixture extendido
+  para incluir SQLiteBackend (con `tmp_path`).
+
+#### Phase 6.3 — `HoneycombGrid.checkpoint` / `restore_from_checkpoint`
+- `hoc.storage.checkpoint` — pure encode / decode helpers:
+  - `encode_blob(payload, *, compress=False) -> bytes`.
+  - `decode_blob(blob) -> Any`.
+- Wire format: `[version (1B) | hmac_sha256 (32B) | compression_flag (1B) | mscs payload]`.
+  HMAC cubre `compression_flag || payload` (corre antes de
+  decompression — defensa contra zlib bombs). Version byte fuera
+  del HMAC (forward-compat).
+- `HoneycombGrid.checkpoint(path, *, compress=False)` — atomic
+  write (`.tmp` + `replace`).
+- `HoneycombGrid.restore_from_checkpoint(path, *, event_bus=None)`
+  classmethod — verify HMAC, decompress, mscs strict load, reusa
+  `HoneycombGrid.from_dict` para rehydrate.
+- `HoneycombCell.to_dict` extendido con `state_history`.
+- `HoneycombGrid.from_dict` extendido para restaurar `state_history`.
+- `tests/test_checkpointing.py` (22 tests, nuevo).
+- Ver [ADR-014](docs/adr/ADR-014-checkpoint-format.md).
+
+#### Phase 6.4 — Auto-checkpoint inside `tick()`
+- `HoneycombConfig.checkpoint_interval_ticks: int | None = None`
+  (default disabled).
+- `HoneycombConfig.checkpoint_path: str | None = None` (required
+  cuando interval set; constructor refuses combo inconsistente).
+- `HoneycombConfig.checkpoint_compress: bool = False`.
+- `HoneycombGrid.tick` posts checkpoint después de incrementar
+  `_tick_count` cuando `_tick_count % interval == 0`.
+- `_auto_checkpoint` swallows + logs failures vía
+  `security.sanitize_error` — no abort el live tick.
+- `tests/test_crash_recovery.py` (14 tests, nuevo).
+
+#### Documentation
+- **ADR-013** — StorageBackend abstraction (Protocol vs ABC,
+  default backend, schema versioning approach).
+- **ADR-014** — Checkpoint format (mscs + HMAC + opcional zlib,
+  recovery guarantees).
+- **ADR-015** — Class-level FSM optimization de Phase 6.6.
+
+#### Tests (961 pasando, +157)
+- `tests/test_bridge_split.py` (54).
+- `tests/test_storage_backend.py` (27 + parametrize por backend).
+- `tests/test_storage_sqlite.py` (25).
+- `tests/test_checkpointing.py` (22).
+- `tests/test_crash_recovery.py` (14).
+
+### Changed
+
+#### `pyproject.toml`
+- `[tool.setuptools].packages` += `hoc.bridge`, `hoc.storage`.
+- `[tool.pytest.ini_options].norecursedirs` += `bridge`, `storage`.
+- mypy override: + `bridge`, `bridge.*`, `hoc.bridge.*`,
+  `HOC.bridge.*` (cwd-name alias para el dual-import dance —
+  mismo patrón que `HOC.state_machines.*` desde Phase 4).
+
+#### `bench.yml`
+- Phase 5.5 advisory mode → Phase 6.7 hard-fail mode.
+- Threshold 50 % → 10 %.
+- Baseline arg `bench_baseline.json` → `bench_baseline_ci.json`.
+
+#### `HoneyArchive`
+- `_archive: dict[str, bytes]` reemplazado por
+  `_backend: StorageBackend`.
+- `__init__` acepta `backend: StorageBackend | None = None` opcional.
+
+#### `HoneycombCell`
+- `__slots__`: -1 (`_fsm` removed, `_state_history` added net 0).
+- `_CLASS_FSM` ClassVar nuevo.
+- `_set_state` ahora consulta `_CLASS_FSM.is_legal_transition` en
+  lugar de `_fsm.transition_to`.
+- `cell.fsm` retorna `_CellFsmView` proxy.
+- `cell.to_dict` incluye `state_history`.
+
+#### `HocStateMachine`
+- Nuevo método `is_legal_transition(source, target) -> bool` —
+  pure structural check.
+
+### Audits
+
+- ruff: 0 errores.
+- black: 0 archivos a reformatear.
+- mypy `python -m mypy .`: 0 errores (24 source files; +`hoc.storage`
+  + `hoc.bridge` enter strict).
+- mypy `python -m mypy --explicit-package-bases state_machines/*.py`: 0.
+- bandit: **0 / 0 / 0** (HIGH / MEDIUM / LOW), 12,416 LOC scanned,
+  50 archivos.
+- pip-audit (runtime + dev): clean.
+- radon CC: average **C (13.5)** — leve aumento vs Phase 5 (C 13.3),
+  todo legacy.
+- pytest: **961 / 961 passing**.
+- coverage: **83.08 %** (target ≥ 81 %; supera por +2 pts).
+- choreo `--strict`: 0/0/0 ✅.
+
+### Deferred
+
+#### Phase 6.9 — LMDB / S3 / Redis backends (opcional)
+Brief flagged como opcional. Spec en ADR-013 — cualquier impl que
+respete las cinco métodos del Protocol pasa el contract suite.
+
+#### Phase 6.10 — Phase 5.4 / 5.7 carryover (Prometheus + dashboard)
+Brief flagged como carryover opcional. Mitigación interim:
+structured logs de Phase 5.3 cubren las series que un Prometheus
+collector consumiría.
+
+#### Task queue persistence
+`SwarmScheduler.task_queue` no incluido en checkpoint v1. Diferido
+a Phase 7 (async migration) — una tarea async-aware tiene una
+shape de serialización más limpia que un thread-pool callable.
+
+#### CombStorage backend
+Deliberadamente in-memory. Si Phase 8 (multi-nodo) demanda shared
+L2 cross-nodes, revisitar entonces.
+
+[1.6.0-phase06]: https://github.com/esraderey/Honeycomb-Optimized-Computing/releases/tag/v1.6.0-phase06
+
+---
+
 ## [1.5.0-phase05] — 2026-04-26
 
 **Cierre de Fase 5 — Observabilidad + full FSM wire-up.** 804 tests
