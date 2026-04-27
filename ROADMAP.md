@@ -454,9 +454,50 @@ flip).
 
 ---
 
-## FASE 6 — Persistencia & Storage
+## FASE 6 — Persistencia & Storage — **CERRADA** 🟢
 **Objetivo**: HoneyArchive con backends reales; recovery completo tras crash.
-**Duración**: 3-4 semanas
+**Duración real**: 1 sesión
+**Tag al cerrar**: `v1.6.0-phase06` — cierre 2026-04-27
+
+**Resultado**: 961 tests pasando (+157 vs Phase 5), cobertura
+**83.08 %** (+3.67 pts), nuevo subpaquete `hoc.storage` con
+`StorageBackend` Protocol + `MemoryBackend` default + `SQLiteBackend`
+(WAL + schema versioning + connection-per-thread, stdlib only).
+`HoneycombGrid.checkpoint(path)` y `restore_from_checkpoint(path)`
+serializan/deserializan vía blob HMAC-firmado (encode_blob /
+decode_blob); auto-checkpointing opt-in dentro del tick loop con
+RPO acotado por `checkpoint_interval_ticks`. Phase 6.5 splittea
+`bridge.py` (886 LOC, último top-level legacy ≥ 800 LOC) en
+`hoc.bridge` subpaquete (3 módulos), empujando bridge cobertura de
+56 % a 96 % y cerrando Gap 4 desde Phase 4 closure. Phase 6.6
+introduce class-level shared FSM en `HoneycombCell` que cierra la
+regresión Phase 5 `test_grid_creation` (-66.47 % vs baseline, target
+era ±5 %). Phase 6.7 captura el bench baseline en `ubuntu-latest`
+vía `workflow_dispatch` desde main; `bench-regression` CI job vuelve
+a hard-fail mode con threshold 10 % (el advisory 50 % de Phase 5.5
+se elimina). Bandit 0/0/0 mantenido. choreo `--strict` 0/0/0
+mantenido. Sin nuevas runtime deps (sqlite3 + zlib son stdlib).
+Cierre completo: [snapshot/PHASE_06_CLOSURE.md](snapshot/PHASE_06_CLOSURE.md).
+Decisiones de arquitectura:
+[ADR-013](docs/adr/ADR-013-storage-backend-abstraction.md) (storage
+backend abstraction),
+[ADR-014](docs/adr/ADR-014-checkpoint-format.md) (checkpoint format),
+[ADR-015](docs/adr/ADR-015-class-level-cell-fsm.md) (class-level
+FSM optimization).
+
+### Diferido a Phase 6.x followup / Phase 7+
+- 6.9 Backends adicionales (LMDB / S3 / Redis) — opcional per brief.
+  Spec en ADR-013.
+- 6.10 Phase 5.4 (Prometheus) + 5.7 (dashboard) carryover — opcional.
+- Task queue persistence — `SwarmScheduler.task_queue` no incluido
+  en checkpoint v1; diferido a Phase 7 async migration.
+- CombStorage backend — deliberadamente in-memory; revisitar si
+  Phase 8 demanda shared L2.
+
+### Scope original (planeado)
+
+**Objetivo planeado**: HoneyArchive con backends reales; recovery completo tras crash.
+**Duración estimada**: 3-4 semanas
 **Tag al cerrar**: `v1.6.0-phase06`
 
 ### Backends pluggables
