@@ -275,6 +275,35 @@ class HocStateMachine:
         wildcard = [trigger for src, trigger in candidates if src == WILDCARD]
         return any(self._machine.can(trigger, **ctx_kwargs) for trigger in explicit + wildcard)
 
+    def is_legal_transition(self, source: str, target: str) -> bool:
+        """
+        Pure structural check: does an edge exist from ``source`` to
+        ``target`` in this FSM's spec? Wildcard sources match.
+
+        Differs from :meth:`can_transition_to` in three ways:
+
+        - Reads neither ``self._machine.state`` nor any other instance
+          state: the result depends only on the spec graph and the
+          ``(source, target)`` pair.
+        - Does **not** evaluate guards. If your transitions carry guards
+          and the answer must reflect them, use
+          :meth:`can_transition_to` (which costs one ``_machine.can()``
+          call per candidate trigger).
+        - Returns ``False`` for unknown ``target`` or ``source``
+          (does not raise).
+
+        Phase 6.6 motivates this method: a class-level ``HocStateMachine``
+        shared across many objects (e.g. one per ``HoneycombCell``) can
+        validate per-object transitions without ever mutating the
+        engine's internal state. Each object tracks its own current
+        state independently and asks the spec object whether the move
+        is legal — O(k) lookup vs. O(machine init) per object.
+        """
+        if target not in self._machine.states:
+            return False
+        candidates = self._dest_index.get(target, [])
+        return any(src in (source, WILDCARD) for src, _trigger in candidates)
+
     def transition_to(self, target: str, **ctx_kwargs: Any) -> str:
         """
         Move the FSM to ``target``. Returns the new state name.
