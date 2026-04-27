@@ -29,8 +29,10 @@ implementations may import their drivers (``sqlite3``, ``lmdb``,
 from __future__ import annotations
 
 from .base import MemoryBackend, StorageBackend
+from .sqlite import SQLiteBackend
 
 __all__ = [
     "StorageBackend",
     "MemoryBackend",
+    "SQLiteBackend",
 ]

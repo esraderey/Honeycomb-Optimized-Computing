@@ -17,24 +17,30 @@ import threading
 
 import pytest
 
-from hoc.storage import MemoryBackend, StorageBackend
+from hoc.storage import MemoryBackend, SQLiteBackend, StorageBackend
 
 # ───────────────────────────────────────────────────────────────────────────────
 # Parametrized backend fixture
 # ───────────────────────────────────────────────────────────────────────────────
 
 
-# Phase 6.2 will append ``SQLiteBackend`` to this tuple. Keep the entries
-# as zero-arg callables so ``request.param()`` always produces a fresh
-# instance; backends like SQLite that need a path get wrapped in a
-# lambda (``lambda: SQLiteBackend(":memory:")``).
-_BACKEND_FACTORIES: tuple = (MemoryBackend,)
+# Phase 6.2: SQLiteBackend joins MemoryBackend in the contract suite.
+# Future LMDB / S3 / Redis backends append their own param string here.
+@pytest.fixture(params=["memory", "sqlite"])
+def backend(request, tmp_path) -> StorageBackend:
+    """Yields a fresh :class:`StorageBackend` instance per test.
 
-
-@pytest.fixture(params=_BACKEND_FACTORIES, ids=lambda f: f.__name__)
-def backend(request) -> StorageBackend:
-    """Yields a fresh :class:`StorageBackend` instance per test."""
-    return request.param()
+    ``tmp_path`` is an unused pytest builtin for the memory backend
+    but disk-backed backends (SQLite, LMDB, …) need a writable
+    location. Receiving it here keeps the fixture signature uniform
+    across params.
+    """
+    kind = request.param
+    if kind == "memory":
+        return MemoryBackend()
+    if kind == "sqlite":
+        return SQLiteBackend(tmp_path / "compliance.db")
+    raise ValueError(f"Unknown backend kind: {kind!r}")
 
 
 # ───────────────────────────────────────────────────────────────────────────────
