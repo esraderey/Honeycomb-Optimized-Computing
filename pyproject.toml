@@ -73,10 +73,13 @@ dev = [
 
 [tool.setuptools]
 package-dir = {hoc = "."}
-packages = ["hoc", "hoc.core", "hoc.metrics", "hoc.state_machines"]
+packages = ["hoc", "hoc.core", "hoc.metrics", "hoc.state_machines", "hoc.bridge"]
 # Phase 5.3: ``observability`` lives inside ``hoc.core`` (as
 # ``core/observability.py``), so it ships with the existing
 # ``hoc.core`` package — no separate entry needed here.
+# Phase 6.5: legacy ``bridge.py`` (886 LOC) split into ``hoc.bridge``
+# subpackage (converters / mappers / adapters), same pattern as Phase 3
+# core/metrics splits.
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -91,7 +94,7 @@ addopts = "-v --tb=short --import-mode=importlib"
 pythonpath = ["."]
 # Don't descend into these dirs during collection. Prevents pytest from
 # discovering the package source and trying to treat files there as tests.
-norecursedirs = ["snapshot", "benchmarks", ".hypothesis", ".pytest_cache", "hoc.egg-info", "core", "metrics", "state_machines", "docs", ".git", "__pycache__"]
+norecursedirs = ["snapshot", "benchmarks", ".hypothesis", ".pytest_cache", "hoc.egg-info", "core", "metrics", "state_machines", "bridge", "docs", ".git", "__pycache__"]
 
 [tool.coverage.run]
 source = ["."]
@@ -258,11 +261,13 @@ module = [
     "metrics",
     "metrics.*",
     "bridge",
+    "bridge.*",
     "hoc.core",
     "hoc.core.*",
     "hoc.metrics",
     "hoc.metrics.*",
     "hoc.bridge",
+    "hoc.bridge.*",
 ]
 # Full suppression for legacy modules during Phase 3. Future phases tighten
 # per-module by removing entries from this list (and then fixing the resulting
@@ -283,6 +288,15 @@ ignore_errors = true
 # strict-mypy via ``mypy state_machines/`` invoked directly in CI.
 [[tool.mypy.overrides]]
 module = ["HOC.state_machines", "HOC.state_machines.*"]
+ignore_errors = true
+
+# Phase 6.5: same cwd-name aliasing applies to the new ``hoc.bridge`` subpackage
+# (split from legacy ``bridge.py``). When mypy scans ``D:\HOC`` as cwd it
+# reaches the files via the ``HOC.bridge.*`` alias too. Mirror the legacy
+# ``bridge`` override (``ignore_errors``) so the split inherits the same
+# Phase 3 ADR-006 relaxation rather than re-introducing 8 strict errors.
+[[tool.mypy.overrides]]
+module = ["HOC.bridge", "HOC.bridge.*"]
 ignore_errors = true
 
 
