@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   bench-regression:
-    name: bench regression vs snapshot/bench_baseline.json
+    name: bench regression vs snapshot/bench_baseline_ci.json
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -79,26 +79,24 @@ jobs:
           with open('snapshot/bench_current.json', 'w') as f:
               json.dump(condensed, f, indent=2, sort_keys=True)
           "
-      # Compare against the committed baseline. Currently advisory
-      # (``continue-on-error: true``) because the committed baseline
-      # was captured on a developer's local machine (Windows), not on
-      # ``ubuntu-latest``. Cross-runner variance pushes individual
-      # benchmarks ±50% even when the underlying code is unchanged.
-      # Threshold raised to 50% so only order-of-magnitude regressions
-      # (a real "this is 2× slower" signal) light up the diff.
+      # Phase 6.7: baseline now captured on ``ubuntu-latest`` (this same
+      # workflow, ``workflow_dispatch`` from main commit 38240a7) and
+      # committed as ``snapshot/bench_baseline_ci.json``. Cross-runner
+      # variance is gone — we compare ubuntu vs ubuntu — so the
+      # ``continue-on-error`` advisory has been dropped and the
+      # threshold tightened back to the original 10%. ``>10%`` mean
+      # regression now hard-fails the build.
       #
-      # Phase 5.x follow-up: capture a baseline ON ``ubuntu-latest``
-      # via ``workflow_dispatch`` of this same job, commit the
-      # artifact as ``snapshot/bench_baseline_ci.json``, then drop
-      # ``continue-on-error`` and tighten the threshold back to 10%.
-      # See PHASE_05_CLOSURE.md "Diferido" section.
-      - name: Compare vs baseline (advisory until CI baseline captured)
-        continue-on-error: true
+      # ``snapshot/bench_baseline.json`` is kept untouched for local
+      # developer use (Windows / macOS): its noise floor matches the
+      # local hardware and the documented ``compare_bench.py`` invocation
+      # in CONTRIBUTING.md still points at it for pre-push checks.
+      - name: Compare vs CI baseline
         run: |
           python scripts/compare_bench.py \
-            snapshot/bench_baseline.json \
+            snapshot/bench_baseline_ci.json \
             snapshot/bench_current.json \
-            --threshold 50.0
+            --threshold 10.0
       # Upload the current snapshot for reviewers / future baselines.
       - uses: actions/upload-artifact@v4
         if: always()
