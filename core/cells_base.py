@@ -739,6 +739,12 @@ class HoneycombCell:
                 "coord": self.coord.to_dict(),
                 "role": self.role.name,
                 "state": self._state.name,
+                # Phase 6.3: ``state_history`` joins to_dict so checkpoint
+                # blobs can preserve the FSM trail across restarts. The
+                # legacy ``from_dict`` ignores unknown keys gracefully,
+                # so older checkpoints (pre-Phase-6.3, no history) still
+                # restore — the new attribute simply stays empty.
+                "state_history": list(self._state_history),
                 "load": self._load,
                 "vcores": len(self._vcores),
                 "neighbors": sum(1 for n in self._neighbors.values() if n),

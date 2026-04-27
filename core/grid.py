@@ -728,7 +728,104 @@ class HoneycombGrid:
                 cell._error_count = cell_data.get("errors", 0)
                 cell._ticks_processed = cell_data.get("ticks", 0)
                 cell._last_activity = cell_data.get("last_activity", time.time())
+                # Phase 6.3: restore FSM history if present in the
+                # checkpoint payload. Legacy v3.0 dicts (pre-Phase-6.3)
+                # didn't carry it; ``cell._state_history`` was already
+                # initialized empty by the cell's __init__, so a missing
+                # entry leaves the deque untouched.
+                history = cell_data.get("state_history")
+                if history:
+                    cell._state_history.extend(history)
 
+        return grid
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # CHECKPOINTING (Phase 6.3)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def checkpoint(self, path: Any, *, compress: bool = False) -> None:
+        """Serialize the grid state to ``path`` as a HMAC-signed blob.
+
+        Phase 6.3: pure on-disk snapshot of the grid's logical state
+        (config + per-cell state / role / history / counters / pheromones).
+        Wire format and integrity guarantees live in
+        :mod:`hoc.storage.checkpoint`. The write is atomic — the blob
+        is written to ``path.tmp`` and renamed in place — so a crash
+        mid-write leaves either the previous snapshot or no snapshot,
+        never a half-written one.
+
+        Parameters
+        ----------
+        path:
+            Destination file. ``str`` or :class:`pathlib.Path`.
+        compress:
+            If ``True``, zlib-compress the mscs serialization before
+            HMAC-signing. Roughly 50–70 % size reduction on
+            grid-sized blobs at the cost of a few ms of CPU.
+        """
+        from pathlib import Path as _Path
+
+        from ..storage.checkpoint import encode_blob
+
+        target = _Path(path)
+        payload = self.to_dict()
+        blob = encode_blob(payload, compress=compress)
+
+        # Atomic write: ``write + replace`` so a crash between bytes
+        # never leaves a torn file at ``target``. ``replace`` is the
+        # cross-platform sibling of POSIX ``rename`` — atomic on
+        # both Windows (since Python 3.3) and POSIX.
+        tmp = target.with_suffix(target.suffix + ".tmp")
+        tmp.write_bytes(blob)
+        tmp.replace(target)
+
+    @classmethod
+    def restore_from_checkpoint(
+        cls,
+        path: Any,
+        *,
+        event_bus: EventBus | None = None,
+    ) -> HoneycombGrid:
+        """Rebuild a grid from a checkpoint blob produced by
+        :meth:`checkpoint`.
+
+        Verification order (each failure raises a distinguishable
+        exception): blob header (``ValueError``) → outer HMAC
+        (:class:`hoc.security.MSCSecurityError`) → optional zlib
+        decompression (``ValueError``) → mscs strict-mode load
+        (re-raised verbatim).
+
+        Returns a fully-initialised :class:`HoneycombGrid` with the
+        checkpoint's tick_count, per-cell state, and FSM history
+        restored. The new grid's executor / event_bus / health monitor
+        / metrics collector are freshly constructed — they do not
+        ride the checkpoint.
+
+        Parameters
+        ----------
+        path:
+            Source file. ``str`` or :class:`pathlib.Path``.
+        event_bus:
+            Optional event bus to attach to the restored grid. When
+            ``None`` (default), the global singleton is used (matches
+            the regular constructor's behaviour).
+        """
+        from pathlib import Path as _Path
+
+        from ..storage.checkpoint import decode_blob
+
+        source = _Path(path)
+        blob = source.read_bytes()
+        payload = decode_blob(blob)
+
+        if not isinstance(payload, dict):
+            raise ValueError("checkpoint payload must be a dict")
+
+        # Reuse the legacy ``from_dict`` deserializer — it already
+        # knows how to rehydrate config + tick_count + per-cell state.
+        grid = cls.from_dict(payload)
+        if event_bus is not None:
+            grid._event_bus = event_bus
         return grid
 
     # ─────────────────────────────────────────────────────────────────────────
