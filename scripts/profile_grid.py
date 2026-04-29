@@ -122,9 +122,7 @@ def _run_inproc(radius: int, ticks: int) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Phase 7.8 — profile a HOC grid tick loop."
-    )
+    parser = argparse.ArgumentParser(description="Phase 7.8 — profile a HOC grid tick loop.")
     parser.add_argument(
         "--radius",
         type=int,
