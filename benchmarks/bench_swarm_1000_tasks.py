@@ -72,7 +72,7 @@ def test_swarm_1000_tasks_single_tick(benchmark):
         return (_build_loaded_scheduler(radius=3, num_tasks=1000),), {}
 
     def run(sched):
-        sched.tick()
+        sched.run_tick_sync()
 
     benchmark.pedantic(run, setup=setup, rounds=20, warmup_rounds=2)
 
@@ -87,7 +87,7 @@ def test_swarm_1000_tasks_drain_25_ticks(benchmark):
 
     def run(sched):
         for _ in range(25):
-            sched.tick()
+            sched.run_tick_sync()
 
     benchmark.pedantic(run, setup=setup, rounds=10, warmup_rounds=1)
 
@@ -100,6 +100,6 @@ def test_swarm_500_tasks_radius2(benchmark):
         return (_build_loaded_scheduler(radius=2, num_tasks=500),), {}
 
     def run(sched):
-        sched.tick()
+        sched.run_tick_sync()
 
     benchmark.pedantic(run, setup=setup, rounds=20, warmup_rounds=2)

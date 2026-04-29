@@ -53,6 +53,9 @@ dev = [
     # pytest 8.4.1 / black 25.1.0 hit GHSA-6w46-j5rx-g56g / GHSA-3936-cmfr-pm3m —
     # bumped to the fix versions on 2026-04-24 after pip-audit surfaced them in CI.
     "pytest==9.0.3",
+    # Phase 7.1: pytest-asyncio for the async tick migration. Pinned
+    # to 1.1.0 (matches the dev environment that landed Phase 7).
+    "pytest-asyncio==1.1.0",
     "pytest-benchmark==5.1.0",
     "pytest-cov==6.1.1",
     "pytest-mock==3.15.1",
@@ -101,6 +104,12 @@ python_functions = ["test_*"]
 # __init__.py as a loose module (no parent package) and fails with
 # "attempted relative import with no known parent package".
 addopts = "-v --tb=short --import-mode=importlib"
+# Phase 7.1: ``asyncio_mode = "auto"`` lets ``async def test_…`` functions
+# run inside an event loop without per-test ``@pytest.mark.asyncio``
+# decorators. Required by the new async tick migration: ``HoneycombGrid.tick``,
+# ``NectarFlow.tick``, ``SwarmScheduler.tick``, ``HoneycombCell.execute_tick``
+# all return coroutines from v2.0.0 onward.
+asyncio_mode = "auto"
 pythonpath = ["."]
 # Don't descend into these dirs during collection. Prevents pytest from
 # discovering the package source and trying to treat files there as tests.

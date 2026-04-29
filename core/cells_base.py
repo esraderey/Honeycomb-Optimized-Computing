@@ -14,12 +14,21 @@ en :mod:`hoc.core.cells_specialized` y se re-exportan desde
 :mod:`hoc.core.cells`.
 
 Extraído de ``core.py`` en Fase 3.3.
+
+Phase 7.1: :meth:`HoneycombCell.execute_tick` is now ``async``. The
+sync body lives in :meth:`_sync_execute_tick`; the async wrapper
+dispatches it to ``asyncio.to_thread`` so existing locking and vCore
+contracts stay unchanged. Legacy callers can use
+:meth:`run_execute_tick_sync` (a one-shot DeprecationWarning is
+emitted on first call).
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
+import warnings
 from collections import deque
 from collections.abc import Callable
 from enum import Enum, auto
@@ -219,6 +228,10 @@ class HoneycombCell:
     # Cap the per-cell state history. Matches the ``history_size=8`` that
     # was set on the per-cell tramoya machine pre-Phase-6.6.
     _HISTORY_MAXLEN: ClassVar[int] = 8
+    # Phase 7.2: one-shot guard so ``run_execute_tick_sync`` emits its
+    # DeprecationWarning only the first time it's called per process.
+    # Class-level mutable ClassVar; all instances share the flag.
+    _SYNC_DEPRECATION_EMITTED: ClassVar[bool] = False
 
     def __init__(
         self,
@@ -553,8 +566,31 @@ class HoneycombCell:
     # PROCESAMIENTO (v3.0: con circuit breaker)
     # ─────────────────────────────────────────────────────────────────────────
 
-    def execute_tick(self) -> dict[str, Any]:
-        """Ejecuta un tick de procesamiento con circuit breaker."""
+    async def execute_tick(self) -> dict[str, Any]:
+        """Phase 7.1: async signature.
+
+        The body is dispatched to a worker thread via
+        :func:`asyncio.to_thread` so the existing :class:`RWLock` +
+        synchronous vCore semantics stay correct. Cells can be ticked
+        concurrently from :meth:`HoneycombGrid.tick` via
+        ``asyncio.gather`` with no GIL contention beyond what the
+        thread pool already enforces.
+
+        Per-vCore async dispatch (``await asyncio.to_thread(vcore.tick)``
+        for each vCore) is a future Phase 7.6+ optimisation; see
+        ADR-016 for the trade-off discussion.
+        """
+        return await asyncio.to_thread(self._sync_execute_tick)
+
+    def _sync_execute_tick(self) -> dict[str, Any]:
+        """Phase 7.1: the pre-Phase-7.1 ``execute_tick`` body, kept
+        synchronous so :class:`RWLock` and vCore APIs (most of which
+        remain blocking) work without extra plumbing.
+
+        Use :meth:`execute_tick` (async) from new code or
+        :meth:`run_execute_tick_sync` (sync wrapper with deprecation
+        warning) for legacy callers.
+        """
         # v3.0: Verificar circuit breaker antes de ejecutar
         if not self._circuit_breaker.allow_request():
             return {"processed": False, "reason": "CIRCUIT_OPEN"}
@@ -613,6 +649,37 @@ class HoneycombCell:
                 "errors": errors,
                 "tick": self._ticks_processed,
             }
+
+    def run_execute_tick_sync(self) -> dict[str, Any]:
+        """Phase 7.2: blocking wrapper for legacy callers.
+
+        Equivalent to ``asyncio.run(self.execute_tick())`` for use
+        outside an event loop. Emits :class:`DeprecationWarning` once
+        per process — switch new call-sites to ``await
+        cell.execute_tick()``. From inside a running loop this raises
+        ``RuntimeError`` (use ``await`` instead).
+        """
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            raise RuntimeError(
+                "HoneycombCell.run_execute_tick_sync called from a running "
+                "event loop; use 'await cell.execute_tick()' instead."
+            )
+        if not HoneycombCell._SYNC_DEPRECATION_EMITTED:
+            warnings.warn(
+                "HoneycombCell.run_execute_tick_sync is a v1→v2 migration "
+                "aid; switch callers to 'await cell.execute_tick()'. This "
+                "wrapper will be removed in HOC v3.0.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            HoneycombCell._SYNC_DEPRECATION_EMITTED = True
+        # Phase 7.2: skip the to_thread hop; we already lack an event
+        # loop, so ``_sync_execute_tick`` runs in this thread directly.
+        return self._sync_execute_tick()
 
     def recover(self) -> bool:
         """Intenta recuperar una celda fallida."""

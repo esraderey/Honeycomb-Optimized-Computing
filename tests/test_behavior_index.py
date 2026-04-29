@@ -314,14 +314,14 @@ class TestSchedulerIntegration:
         # single tick.
         for _ in range(5):
             sched.submit_task("compute", {})
-        sched.tick()
+        sched.run_tick_sync()
         # Some tasks must have been processed.
         assert sched._tasks_completed + sched._tasks_failed > 0
 
     def test_tick_processes_specialized_tasks(self, grid, nectar):
         sched = SwarmScheduler(grid, nectar)
         sched.submit_task("spawn", {"spec": {}})
-        sched.tick()
+        sched.run_tick_sync()
         # Nurses handle spawn tasks — at least one should have completed.
         assert sched._tasks_completed >= 1
 
@@ -334,7 +334,7 @@ class TestSchedulerIntegration:
         sched.cancel_task(task.task_id)
         # After cancel the next pop_best for that behavior should not
         # return this task.
-        sched.tick()
+        sched.run_tick_sync()
         # Task is now CANCELLED, not RUNNING.
         assert task.state is TaskState.CANCELLED
 
@@ -356,7 +356,7 @@ class TestSchedulerIntegration:
 
         # Run exactly INDEX_COMPACT_INTERVAL_TICKS ticks.
         for _ in range(SwarmScheduler.INDEX_COMPACT_INTERVAL_TICKS):
-            sched.tick()
+            sched.run_tick_sync()
 
         # Compact ran on the final tick → tombstone set cleared.
         assert sched._behavior_index._tombstoned == set()
@@ -398,6 +398,6 @@ class TestSchedulerThroughputSmoke:
         # Run several ticks; verify processed > 0 and no exceptions.
         total_processed = 0
         for _ in range(20):
-            r = sched.tick()
+            r = sched.run_tick_sync()
             total_processed += r["tasks_processed"]
         assert total_processed > 0

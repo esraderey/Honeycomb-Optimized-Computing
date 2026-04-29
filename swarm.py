@@ -45,10 +45,12 @@ Flujo de scheduling:
 
 from __future__ import annotations
 
+import asyncio
 import heapq
 import logging
 import threading
 import time
+import warnings
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Callable
@@ -56,6 +58,7 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import (
     Any,
+    ClassVar,
     TypeVar,
 )
 
@@ -1397,7 +1400,24 @@ class SwarmScheduler:
             return True
         return False
 
-    def tick(self) -> dict[str, Any]:
+    # Phase 7.2: one-shot guard so ``run_tick_sync`` emits its
+    # DeprecationWarning only the first time it's called per process.
+    _SYNC_DEPRECATION_EMITTED: ClassVar[bool] = False
+
+    async def tick(self) -> dict[str, Any]:
+        """Phase 7.1: async tick.
+
+        Body dispatched to ``asyncio.to_thread`` so the existing
+        :class:`threading.RLock` in :class:`SwarmScheduler` works
+        without async re-plumbing. The hot path
+        (:class:`BehaviorIndex.pop_best` + ``execute_task``) is
+        CPU-light, so the to_thread hop is essentially free; the win
+        from async lives at the grid level (concurrent
+        :meth:`HoneycombCell.execute_tick` calls).
+        """
+        return await asyncio.to_thread(self._sync_tick)
+
+    def _sync_tick(self) -> dict[str, Any]:
         """
         Ejecuta un tick del scheduler.
 
@@ -1407,6 +1427,9 @@ class SwarmScheduler:
         ``select_task([candidate])`` for the probabilistic refusal
         path — refused tasks are re-inserted into the index so the
         next tick can offer them again.
+
+        Phase 7.1: renamed from ``tick`` to ``_sync_tick``; the
+        public :meth:`tick` is now an async wrapper.
 
         Returns:
             Estadísticas del tick
@@ -1539,6 +1562,33 @@ class SwarmScheduler:
             self._task_index.clear()
 
         logger.info("SwarmScheduler shutdown complete")
+
+    def run_tick_sync(self) -> dict[str, Any]:
+        """Phase 7.2: blocking wrapper for legacy sync callers.
+
+        Equivalent to ``asyncio.run(self.tick())``. Emits
+        :class:`DeprecationWarning` once per process. Raises
+        ``RuntimeError`` if called from inside a running event loop.
+        """
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            raise RuntimeError(
+                "SwarmScheduler.run_tick_sync called from a running event "
+                "loop; use 'await scheduler.tick()' instead."
+            )
+        if not SwarmScheduler._SYNC_DEPRECATION_EMITTED:
+            warnings.warn(
+                "SwarmScheduler.run_tick_sync is a v1→v2 migration aid; "
+                "switch callers to 'await scheduler.tick()'. This wrapper "
+                "will be removed in HOC v3.0.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            SwarmScheduler._SYNC_DEPRECATION_EMITTED = True
+        return self._sync_tick()
 
     # ── Phase 7.10: checkpoint serialization ──────────────────────────
 

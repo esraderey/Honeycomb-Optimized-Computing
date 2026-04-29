@@ -8,6 +8,9 @@
 # GHSA-6w46-j5rx-g56g (pytest) and GHSA-3936-cmfr-pm3m (black) surfaced by
 # pip-audit in CI.
 pytest==9.0.3
+# Phase 7.1: pytest-asyncio for the async tick migration. Pinned to
+# 1.1.0 to match what landed Phase 7's CI runs.
+pytest-asyncio==1.1.0
 pytest-benchmark==5.1.0
 pytest-cov==6.1.1
 pytest-mock==3.15.1
