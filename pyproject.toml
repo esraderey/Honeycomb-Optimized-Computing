@@ -53,6 +53,11 @@ dev = [
     # pytest 8.4.1 / black 25.1.0 hit GHSA-6w46-j5rx-g56g / GHSA-3936-cmfr-pm3m —
     # bumped to the fix versions on 2026-04-24 after pip-audit surfaced them in CI.
     "pytest==9.0.3",
+    # Phase 7.1: pytest-asyncio for the async tick migration. Pinned
+    # to 1.3.0 — the first release that loosened its pytest constraint
+    # to ``pytest<10`` so it composes cleanly with the Phase 3 pytest
+    # 9.0.3 pin (1.1.0 had ``pytest<9`` which pip-audit rejected).
+    "pytest-asyncio==1.3.0",
     "pytest-benchmark==5.1.0",
     "pytest-cov==6.1.1",
     "pytest-mock==3.15.1",
@@ -65,6 +70,22 @@ dev = [
     "bandit==1.8.0",
     "pip-audit==2.9.0",
     "radon==6.0.1",
+]
+# Phase 7.6: optional JIT acceleration for hot paths (HexCoord.distance
+# batch calls, etc.). Numba is BSD-licensed, ~30 MB. Pure-Python
+# fallback always works — installing this extra is a perf opt-in only.
+# The full JIT bridge (``@njit(cache=True)`` on ``_axial_distance``) is
+# scaffolded for Phase 7.x followup / Phase 9; the extras_require slot
+# is reserved here so deployments can pre-install numba ahead of the
+# wire-up.
+jit = [
+    "numba>=0.59",
+]
+# Phase 7.4: opt-in Windows sandbox dependency (Job Objects via
+# pywin32). Only meaningful on Windows; the sandbox falls back to
+# SandboxNotSupported if pywin32 is missing.
+sandbox-windows = [
+    "pywin32>=306; sys_platform == 'win32'",
 ]
 
 [project.urls]
@@ -101,6 +122,12 @@ python_functions = ["test_*"]
 # __init__.py as a loose module (no parent package) and fails with
 # "attempted relative import with no known parent package".
 addopts = "-v --tb=short --import-mode=importlib"
+# Phase 7.1: ``asyncio_mode = "auto"`` lets ``async def test_…`` functions
+# run inside an event loop without per-test ``@pytest.mark.asyncio``
+# decorators. Required by the new async tick migration: ``HoneycombGrid.tick``,
+# ``NectarFlow.tick``, ``SwarmScheduler.tick``, ``HoneycombCell.execute_tick``
+# all return coroutines from v2.0.0 onward.
+asyncio_mode = "auto"
 pythonpath = ["."]
 # Don't descend into these dirs during collection. Prevents pytest from
 # discovering the package source and trying to treat files there as tests.
@@ -207,6 +234,14 @@ exclude = [
     "snapshot/",
     "docs/",
     "build/",
+    # Phase 7.8: ``scripts/`` hosts ad-hoc dev tools (profile_grid.py,
+    # generate_state_machines_md.py, compare_bench.py). They import the
+    # ``hoc`` package via ``sys.path`` munging at runtime, which mypy's
+    # static check can't follow. The state_machines drift detector is
+    # already type-checked separately (it has 0 errors at strict mypy
+    # under ``mypy --explicit-package-bases scripts/generate_state_machines_md.py``);
+    # the new profile_grid.py adds no new typing surface worth gating on.
+    "scripts/",
     "hoc\\.egg-info/",
     # Phase 3 legacy suppression — these files pre-date strict typing.
     # Future phases re-enable per-module by removing from exclude. See ADR-006.

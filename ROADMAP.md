@@ -535,9 +535,53 @@ FSM optimization).
 
 ---
 
-## FASE 7 — Async/Await & Performance
+## FASE 7 — Async/Await & Performance — **CERRADA** 🟢 ⚠️ MAJOR
 **Objetivo**: Throughput 5-10× mejor; sandboxing real de tareas.
-**Duración**: 4-5 semanas
+**Duración real**: 1 sesión
+**Tag al cerrar**: `v2.0.0-phase07` ⚠️ **PRIMER MAJOR BUMP DEL ROADMAP** — cierre 2026-04-28
+
+**Resultado**: 1062 tests pasando (+101 vs Phase 6), cobertura
+**83.47 %** local Windows (CI Linux esperado ≥ 85 % cuando los 8 tests
+fork-only del sandbox corren). Las cuatro clases user-facing
+— ``HoneycombGrid``, ``NectarFlow``, ``SwarmScheduler``,
+``HoneycombCell`` — exponen ``async def tick`` / ``async def
+execute_tick`` desde v2.0.0; los wrappers ``run_tick_sync`` /
+``run_execute_tick_sync`` quedan como migration aid hasta v3.0.0.
+Phase 7.5 BehaviorIndex (O(n·m) → O(m·log n)) reduce el filter loop
+de ~34k ops/tick a ~220 ops/tick — bench
+``test_swarm_1000_tasks_single_tick`` ≈ 1.7 ms (≈ **6× speedup** vs
+extrapolated baseline; brief target ≥5× cumplido). Phase 7.4
+SandboxedTaskRunner aterriza process isolation opt-in en POSIX (fork);
+Windows deferred a Phase 7.x followup. Phase 7.10 cierra el gap
+diferido de Phase 6.4: ``SwarmScheduler.task_queue`` persiste en
+checkpoint v2 (``encode_blob`` siempre escribe 0x02; ``decode_blob``
+acepta ambos vía ``SUPPORTED_VERSIONS``). Bandit 0/0/0 mantenido.
+choreo ``--strict`` 0/0/0 mantenido. Sin nuevas runtime deps. Cierre
+completo: [snapshot/PHASE_07_CLOSURE.md](snapshot/PHASE_07_CLOSURE.md).
+Decisiones de arquitectura:
+[ADR-016](docs/adr/ADR-016-async-tick-loop.md) (async tick),
+[ADR-017](docs/adr/ADR-017-sandboxing-model.md) (sandboxing),
+[ADR-018](docs/adr/ADR-018-behavior-index.md) (BehaviorIndex).
+
+### Diferido a Phase 7.x followup / Phase 9
+- 7.7 Cython extensions — DoD permite "deferred a Phase 9".
+- 7.9 Comparative benchmarks (HOC vs Ray / Dask / multiprocessing)
+  — deferred; necesita dev deps Ray/Dask + harness comparativo.
+- 7.11 cobertura ≥85 % global — CI Linux esperado ≥85 % post-merge.
+- 7.12 Phase 5.4 Prometheus + 5.7 Dashboard carryover — opcional
+  per brief; deferred a Phase 8 si emerge demanda observabilidad
+  cross-node.
+- Sandbox process isolation on Windows — Phase 7.x followup
+  (spawn + cloudpickle o subprocess).
+- Sandbox cgroup v2 / Job Objects (full impls) — Phase 7.x followup;
+  stubs raise ``SandboxNotSupported``.
+- CI bench baseline refresh — ``gh workflow run bench.yml`` post-merge,
+  mismo recipe Phase 6.7.
+
+### Scope original (planeado)
+
+**Objetivo planeado**: Throughput 5-10× mejor; sandboxing real de tareas.
+**Duración estimada**: 4-5 semanas
 **Tag al cerrar**: `v2.0.0-phase07` ⚠️ **breaking change** (API async)
 
 ### Async migration

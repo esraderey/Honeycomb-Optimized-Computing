@@ -75,7 +75,7 @@ class TestAutoCheckpointTiming:
         cfg = HoneycombConfig(radius=1)
         grid = HoneycombGrid(cfg)
         for _ in range(5):
-            grid.tick()
+            grid.run_tick_sync()
         assert not target.exists()
         grid.shutdown()
 
@@ -89,13 +89,13 @@ class TestAutoCheckpointTiming:
         grid = HoneycombGrid(cfg)
 
         # tick 1: no snapshot yet (1 % 3 != 0)
-        grid.tick()
+        grid.run_tick_sync()
         assert not target.exists()
         # tick 2: still nothing
-        grid.tick()
+        grid.run_tick_sync()
         assert not target.exists()
         # tick 3: 3 % 3 == 0 → snapshot written
-        grid.tick()
+        grid.run_tick_sync()
         assert target.exists()
         grid.shutdown()
 
@@ -108,7 +108,7 @@ class TestAutoCheckpointTiming:
         )
         grid = HoneycombGrid(cfg)
         for _ in range(2):
-            grid.tick()
+            grid.run_tick_sync()
         # Snapshot is in place; no leftover .tmp suffix.
         assert target.exists()
         assert not (tmp_path / "snap.bin.tmp").exists()
@@ -143,7 +143,7 @@ class TestCrashRecovery:
         )
         grid = HoneycombGrid(cfg)
         for _ in range(10):
-            grid.tick()
+            grid.run_tick_sync()
         _drop_grid(grid)
         del grid
 
@@ -165,7 +165,7 @@ class TestCrashRecovery:
         )
         grid = HoneycombGrid(cfg)
         for _ in range(12):
-            grid.tick()
+            grid.run_tick_sync()
         _drop_grid(grid)
 
         restored = HoneycombGrid.restore_from_checkpoint(target)
@@ -182,14 +182,14 @@ class TestCrashRecovery:
         )
         grid = HoneycombGrid(cfg)
         for _ in range(5):
-            grid.tick()
+            grid.run_tick_sync()
         _drop_grid(grid)
 
         restored = HoneycombGrid.restore_from_checkpoint(target)
         # Resume with the captured config (same checkpoint setup) —
         # the restored grid must be able to tick onward without error.
         for _ in range(3):
-            restored.tick()
+            restored.run_tick_sync()
         assert restored._tick_count == 8  # 5 + 3
         restored.shutdown()
 
@@ -211,7 +211,7 @@ class TestCrashRecovery:
             cell.state = CellState.ACTIVE
 
         for _ in range(2):  # hits the interval
-            grid.tick()
+            grid.run_tick_sync()
         _drop_grid(grid)
 
         restored = HoneycombGrid.restore_from_checkpoint(target)
@@ -243,7 +243,7 @@ class TestCheckpointFailureResilience:
         )
         grid = HoneycombGrid(cfg)
         # Tick should not raise even though the snapshot write fails.
-        result = grid.tick()
+        result = grid.run_tick_sync()
         assert isinstance(result, dict)
         assert result["tick"] == 0  # tick that just ran
         # ``_tick_count`` advanced past the broken interval.
@@ -260,7 +260,7 @@ class TestCheckpointFailureResilience:
         grid = HoneycombGrid(cfg)
         # Several ticks all hit the broken path; none should raise.
         for _ in range(5):
-            grid.tick()
+            grid.run_tick_sync()
         assert grid._tick_count == 5
         grid.shutdown()
 
@@ -276,7 +276,7 @@ class TestManualCheckpointMidRun:
         cfg = HoneycombConfig(radius=1)  # no auto-checkpoint
         grid = HoneycombGrid(cfg)
         for i in range(10):
-            grid.tick()
+            grid.run_tick_sync()
             if i == 4:  # after 5th tick (i counts from 0)
                 grid.checkpoint(target)
 

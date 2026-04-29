@@ -45,16 +45,19 @@ Flujo de datos:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 import threading
 import time
+import warnings
 from collections import OrderedDict, defaultdict, deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import (
     Any,
+    ClassVar,
     TypeVar,
     cast,
 )
@@ -1382,15 +1385,28 @@ class NectarFlow:
     # SISTEMA GLOBAL
     # ─────────────────────────────────────────────────────────────────────────
 
-    def tick(self) -> dict[str, Any]:
-        """
-        Ejecuta un tick del sistema de comunicación (orden: decaimiento → difusión → danzas).
+    # Phase 7.2: one-shot guard so ``run_tick_sync`` emits its
+    # DeprecationWarning only the first time it's called per process.
+    _SYNC_DEPRECATION_EMITTED: ClassVar[bool] = False
 
-        - Evapora feromonas (decaimiento)
-        - Difunde feromonas a los 6 vecinos hexagonales (si diffusion_rate > 0)
-        - Propaga danzas waggle
-        - Procesa cola de comandos reales
+    async def tick(self) -> dict[str, Any]:
+        """Phase 7.1: async tick.
+
+        Pheromone decay / diffusion + waggle dance propagation are
+        CPU-light but holds the lock for the entire pass; we dispatch
+        the body to ``asyncio.to_thread`` so the event loop stays
+        responsive when many flows tick concurrently (e.g. a
+        multi-grid simulation in Phase 8).
+
+        Order preserved: decay → diffusion → dance propagation → old
+        dance cleanup → command count.
         """
+        return await asyncio.to_thread(self._sync_tick)
+
+    def _sync_tick(self) -> dict[str, Any]:
+        """Phase 7.1: the pre-Phase-7.1 ``tick`` body, kept synchronous
+        so :class:`PheromoneTrail` and :class:`WaggleDance` locking
+        works without async re-plumbing."""
         results = {
             "pheromones_evaporated": 0,
             "pheromones_diffused": 0,
@@ -1419,6 +1435,33 @@ class NectarFlow:
         results["commands_pending"] = self._royal.get_pending_count()
 
         return results
+
+    def run_tick_sync(self) -> dict[str, Any]:
+        """Phase 7.2: blocking wrapper for legacy sync callers.
+
+        Equivalent to ``asyncio.run(self.tick())``. Emits
+        :class:`DeprecationWarning` once per process. Raises
+        ``RuntimeError`` if called from inside a running loop.
+        """
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            raise RuntimeError(
+                "NectarFlow.run_tick_sync called from a running event loop; "
+                "use 'await flow.tick()' instead."
+            )
+        if not NectarFlow._SYNC_DEPRECATION_EMITTED:
+            warnings.warn(
+                "NectarFlow.run_tick_sync is a v1→v2 migration aid; switch "
+                "callers to 'await flow.tick()'. This wrapper will be "
+                "removed in HOC v3.0.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            NectarFlow._SYNC_DEPRECATION_EMITTED = True
+        return self._sync_tick()
 
     def get_stats(self) -> dict[str, Any]:
         """Obtiene estadísticas consolidadas."""

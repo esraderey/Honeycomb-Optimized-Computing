@@ -8,6 +8,211 @@ y este proyecto adhiere a [Semantic Versioning](https://semver.org/lang/es/).
 
 ---
 
+## [2.0.0-phase07] — 2026-04-28 ⚠️ MAJOR BUMP — BREAKING CHANGES
+
+**Primer major bump del roadmap.** Phase 7 cierra la migración cardinal
+de async/await + cambios de perf. La API ``HoneycombGrid.tick`` y las
+otras tres tick methods top-level pasan de síncronas a coroutines.
+Wrappers de migración (``run_tick_sync``) acompañan hasta v3.0.
+
+### ⚠️ Breaking changes
+
+- **`HoneycombGrid.tick()` is now `async def tick()`.** Callers
+  must `await grid.tick()` or use the new
+  `HoneycombGrid.run_tick_sync()` wrapper (one-shot
+  `DeprecationWarning` per process; refuses to run from inside an
+  active event loop).
+- **`NectarFlow.tick()` is now async.** Same migration pattern; new
+  `NectarFlow.run_tick_sync()` wrapper.
+- **`SwarmScheduler.tick()` is now async.** Same migration pattern;
+  new `SwarmScheduler.run_tick_sync()` wrapper.
+- **`HoneycombCell.execute_tick()` is now async.** Migration via
+  `await cell.execute_tick()` or `HoneycombCell.run_execute_tick_sync()`
+  wrapper.
+- **`HoneycombGrid._executor` (ThreadPoolExecutor) removed.**
+  Replaced by `asyncio.gather` + `asyncio.Semaphore(max_parallel_rings)`
+  in the new `_async_parallel_tick`. The `max_parallel_rings` config
+  knob now bounds gather concurrency rather than executor workers.
+
+Other behaviour deltas (non-breaking, but visible):
+
+- Probabilistic refusal in `ForagerBehavior.select_task` now triggers
+  a re-insert into `BehaviorIndex` rather than leaving the task for
+  the next behaviour to try. Functionally equivalent; documented
+  in ADR-018.
+- Default scheduler ``submit_task`` behaviour at queue-full
+  unchanged (still raises `RuntimeError`); new `queue_full_policy`
+  config knob lets callers opt in to `drop_oldest` / `drop_newest`
+  / `block`.
+
+### Migration recipe (v1 → v2)
+
+```python
+# v1.x
+grid.tick()
+nectar.tick()
+scheduler.tick()
+cell.execute_tick()
+
+# v2.0+ canonical
+await grid.tick()
+await nectar.tick()
+await scheduler.tick()
+await cell.execute_tick()
+
+# v2.0+ legacy bridge (DeprecationWarning once; removed in v3.0)
+grid.run_tick_sync()
+nectar.run_tick_sync()
+scheduler.run_tick_sync()
+cell.run_execute_tick_sync()
+```
+
+### Resumen ejecutivo
+
+1062 tests pasando (+101 vs Phase 6; 8 skipped en Windows para los
+tests fork-only del sandbox), cobertura **83.47 % en Windows local**
+(CI Linux esperado ≥ 85 % cuando los tests del sandbox corren), zero
+new runtime deps (asyncio es stdlib), nueva dev dep
+``pytest-asyncio==1.3.0`` + dos extras opcionales (``jit`` para numba,
+``sandbox-windows`` para pywin32). Bandit 0/0/0 mantenido. choreo
+``--strict`` 0/0/0 mantenido. Throughput ``test_swarm_1000_tasks_single_tick``
+≈ 1.7 ms (≈ **6× speedup** vs extrapolated pre-Phase-7.5 baseline) —
+brief target ≥ 5× cumplido.
+
+Reporte completo: [snapshot/PHASE_07_CLOSURE.md](snapshot/PHASE_07_CLOSURE.md).
+ADRs nuevos:
+- [ADR-016 Async tick loop](docs/adr/ADR-016-async-tick-loop.md)
+- [ADR-017 Sandboxing model](docs/adr/ADR-017-sandboxing-model.md)
+- [ADR-018 BehaviorIndex perf](docs/adr/ADR-018-behavior-index.md)
+
+### Added
+
+#### Phase 7.10 — Task queue persistence (closes Phase 6.4 gap)
+- `HiveTask.to_dict` / `HiveTask.from_dict`. Callable fields
+  (callback, lambdas in payload) replaced with the
+  `SENTINEL_CALLBACK_REATTACH` marker / `__hoc_unserializable__`
+  dict; restored tasks expose `callback_needs_reattach`.
+- `SwarmScheduler.to_dict` / `SwarmScheduler.from_dict` —
+  serialises tick_count + counters + queue; behaviours rebuilt
+  from grid + config.
+- `SwarmScheduler.restore_from_checkpoint(path, grid, nectar_flow)`
+  classmethod — returns `None` if the blob has no `"scheduler"`
+  key (v1 compat) or a fully-restored scheduler.
+- `HoneycombGrid.checkpoint(scheduler=...)` — optional scheduler
+  bundling alongside the grid dict.
+- Checkpoint blob `VERSION_BYTE` bumped 0x01 → 0x02.
+  `decode_blob` accepts both via `SUPPORTED_VERSIONS` frozenset;
+  `encode_blob` always writes 0x02.
+- 29 tests in `tests/test_checkpointing_v2.py`.
+
+#### Phase 7.5 — `BehaviorIndex` (O(n·m) → O(m·log n))
+- New `BehaviorIndex` class in `swarm.py` with three-method API
+  (`insert`, `pop_best`, `remove`) per the brief.
+- Lazy tombstoning + `compact()` every
+  `INDEX_COMPACT_INTERVAL_TICKS=10` ticks bounds tombstone memory.
+- `SwarmScheduler.tick` rewritten: per-behaviour `pop_best` instead
+  of the O(n·m) filter loop. Probabilistic-refusal contract
+  preserved via re-insert.
+- New type-routing helper `_route_task_to_behaviors` centralises
+  type dispatch (Nurse: spawn/warmup; Scout: explore; Guard:
+  validate; Forager: catch-all). Pinned tasks (target_cell set)
+  route only to the behaviour at that coord.
+- 28 tests in `tests/test_behavior_index.py` + new
+  `benchmarks/bench_swarm_1000_tasks.py`.
+- Decision: [ADR-018](docs/adr/ADR-018-behavior-index.md).
+
+#### Phase 7.1+7.2 — Async migration + sync wrappers (BREAKING)
+- The four user-facing tick methods become `async def`.
+- `HoneycombGrid._async_parallel_tick` replaces ThreadPoolExecutor
+  ring fan-out with `asyncio.gather` bounded by
+  `asyncio.Semaphore(max_parallel_rings)`.
+- `HoneycombCell._sync_execute_tick` (private; the pre-Phase-7.1
+  body) called from the async wrapper via `asyncio.to_thread`.
+- One-shot `DeprecationWarning` wrappers (`run_tick_sync` /
+  `run_execute_tick_sync`) on all four classes. Brief required
+  only `HoneycombGrid.run_tick_sync`; widened to all four to
+  minimize test migration churn (50+ call sites). Trade-off
+  documented in ADR-016.
+- New dev dep `pytest-asyncio==1.3.0` + `asyncio_mode = "auto"`
+  in `pyproject.toml`.
+- 11 new tests in `tests/test_async_tick.py` (canonical await
+  usage); 14 new tests in `tests/test_sync_compat.py` (wrapper
+  contract: result-shape parity, one-shot warning, RuntimeError
+  inside loop).
+- Decision: [ADR-016](docs/adr/ADR-016-async-tick-loop.md).
+
+#### Phase 7.3 — Backpressure + drop policies
+- `SwarmConfig.queue_full_policy: Literal["raise", "drop_oldest",
+  "drop_newest", "block"]`. Default `"raise"` preserves pre-Phase-
+  7.3 behaviour.
+- `SwarmConfig.queue_full_block_timeout_s` (default 5.0s) +
+  `queue_full_block_poll_s` (default 5ms) for the `"block"` policy.
+- `SwarmScheduler._tasks_dropped` counter, exposed via
+  `get_stats()` and persisted via `to_dict` / `from_dict`.
+- 11 tests in `tests/test_backpressure.py` covering all 4 policies
+  + the brief target (10K submissions, queue_size=100,
+  drop_oldest → dropped == 9900).
+
+#### Phase 7.4 — `SandboxedTaskRunner` (process isolation + timeouts)
+- New top-level `hoc.sandbox` module with `SandboxConfig`,
+  `SandboxedTaskRunner`, exception hierarchy
+  (`SandboxError` / `SandboxTimeout` / `SandboxCrashed` /
+  `SandboxNotSupported`), and probe helpers
+  (`cgroup_v2_available`, `job_objects_available`).
+- Default isolation: `"none"` (pass-through). Opt-in only.
+- `"process"` mode (POSIX): `multiprocessing.get_context("fork")` +
+  `Process.join(timeout)` + `Process.kill()` on overrun. SIGSEGV
+  and OOM in the child surface as `SandboxCrashed` in the parent.
+- `"process"` on Windows: explicit `SandboxNotSupported` (deferred
+  to Phase 7.x followup; spawn + cloudpickle vs subprocess).
+- `"cgroup"` and `"job_object"` modes stubbed; raise
+  `SandboxNotSupported`. Phase 7.x followup will land Linux
+  cgroups v2 + Windows Job Objects.
+- 16 tests in `tests/test_sandbox.py` (8 skip on Windows for
+  fork-only paths; CI Linux runs all 16).
+- Decision: [ADR-017](docs/adr/ADR-017-sandboxing-model.md).
+
+#### Phase 7.6 — SIMD vectorisation (minimal)
+- `core/pheromone.py::PheromoneField.decay_all` switches to a
+  numpy-vectorised path when the field carries 4+ deposits
+  (`np.power` + multiply + tombstone). Below n=3 the per-deposit
+  Python loop wins on overhead.
+- New optional extras in `pyproject.toml`:
+  - `jit`: `numba>=0.59` — pre-install slot for the future
+    `@njit(cache=True)` bridge on `_axial_distance`. Full bridge
+    deferred to Phase 7.x followup or Phase 9 per DoD.
+  - `sandbox-windows`: `pywin32>=306; sys_platform == 'win32'`
+    — paired with the Phase 7.4 stub for future Windows Job
+    Objects.
+
+#### Phase 7.8 — Profiling docs + script
+- `docs/perf/profiling.md` — py-spy install/record recipe, what
+  to look for in HOC flame graphs, CI bench-regression integration,
+  Phase 7-specific gotchas.
+- `docs/perf/baseline_v2.md` — narrative Phase 7 vs Phase 6
+  numbers; documents the expected event-loop overhead at small
+  cell counts and the 6-8× win on `swarm_1000_tasks`.
+- `scripts/profile_grid.py` — wrapper that prints the canonical
+  py-spy command for the brief workload (radius=3, 200 ticks).
+  `--inproc` runs the workload in-process + dumps `cProfile`
+  stats for users without py-spy installed.
+
+### Deferred (per brief / DoD)
+
+- **Phase 7.7** Cython extensions — DoD permits "deferred a Phase 9".
+- **Phase 7.9** Comparative benchmarks (HOC vs Ray / Dask /
+  multiprocessing) — deferred to Phase 7.x followup; needs Ray /
+  Dask dev deps.
+- **Phase 7.12** Phase 5.4 Prometheus + 5.7 Dashboard carryover —
+  per brief opcional; deferred.
+- **Sandbox on Windows** (`"process"` mode) — Phase 7.x followup.
+- **Sandbox cgroup v2 / Job Objects** (full implementations) —
+  Phase 7.x followup. Stubs raise `SandboxNotSupported`.
+- **CI bench baseline refresh** — `gh workflow run bench.yml`
+  from main post-merge; same recipe as Phase 6.7.
+
+---
+
 ## [1.6.0-phase06] — 2026-04-27
 
 **Cierre de Fase 6 — Persistencia & Storage.** 961 tests pasando
