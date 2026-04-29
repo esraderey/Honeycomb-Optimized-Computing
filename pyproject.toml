@@ -69,6 +69,22 @@ dev = [
     "pip-audit==2.9.0",
     "radon==6.0.1",
 ]
+# Phase 7.6: optional JIT acceleration for hot paths (HexCoord.distance
+# batch calls, etc.). Numba is BSD-licensed, ~30 MB. Pure-Python
+# fallback always works — installing this extra is a perf opt-in only.
+# The full JIT bridge (``@njit(cache=True)`` on ``_axial_distance``) is
+# scaffolded for Phase 7.x followup / Phase 9; the extras_require slot
+# is reserved here so deployments can pre-install numba ahead of the
+# wire-up.
+jit = [
+    "numba>=0.59",
+]
+# Phase 7.4: opt-in Windows sandbox dependency (Job Objects via
+# pywin32). Only meaningful on Windows; the sandbox falls back to
+# SandboxNotSupported if pywin32 is missing.
+sandbox-windows = [
+    "pywin32>=306; sys_platform == 'win32'",
+]
 
 [project.urls]
 "Documentation" = "https://github.com/esraderey/Honeycomb-Optimized-Computing"
