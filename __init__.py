@@ -215,6 +215,19 @@ from .resilience import (
 )
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# SANDBOX - Aislamiento de procesos (Phase 7.4)
+# ═══════════════════════════════════════════════════════════════════════════════
+from .sandbox import (
+    IsolationMode,
+    SandboxConfig,
+    SandboxCrashed,
+    SandboxedTaskRunner,
+    SandboxError,
+    SandboxNotSupported,
+    SandboxTimeout,
+)
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # SWARM SCHEDULER - Scheduling bio-inspirado
 # ═══════════════════════════════════════════════════════════════════════════════
 from .swarm import (
@@ -310,6 +323,14 @@ __all__ = [
     "MirrorCell",
     "SwarmRecovery",
     "CombRepair",
+    # Sandbox (Phase 7.4)
+    "IsolationMode",
+    "SandboxConfig",
+    "SandboxedTaskRunner",
+    "SandboxError",
+    "SandboxTimeout",
+    "SandboxCrashed",
+    "SandboxNotSupported",
     # Observability (Phase 5.3) — re-exported from hoc.core.observability
     "configure_logging",
     "get_event_logger",
