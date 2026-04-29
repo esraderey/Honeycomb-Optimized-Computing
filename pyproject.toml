@@ -131,7 +131,12 @@ asyncio_mode = "auto"
 pythonpath = ["."]
 # Don't descend into these dirs during collection. Prevents pytest from
 # discovering the package source and trying to treat files there as tests.
-norecursedirs = ["snapshot", "benchmarks", ".hypothesis", ".pytest_cache", "hoc.egg-info", "core", "metrics", "state_machines", "bridge", "storage", "docs", ".git", "__pycache__"]
+norecursedirs = ["snapshot", "benchmarks", ".hypothesis", ".pytest_cache", "hoc.egg-info", "core", "metrics", "state_machines", "bridge", "storage", "docs", ".git", "__pycache__", "enjambre_de_guerra"]
+markers = [
+    "stress: opt-in stress tests under enjambre_de_guerra/ (slow; not run in default CI)",
+    "slow: stress tests that take >30s individually",
+    "posix_only: tests that require POSIX (skip on Windows)",
+]
 
 [tool.coverage.run]
 source = ["."]
@@ -242,6 +247,13 @@ exclude = [
     # under ``mypy --explicit-package-bases scripts/generate_state_machines_md.py``);
     # the new profile_grid.py adds no new typing surface worth gating on.
     "scripts/",
+    # Phase 7 followup: ``enjambre_de_guerra/`` hosts opt-in stress
+    # tests. Same dual-import dance as scripts/ — mypy resolves the
+    # files under both ``HOC.enjambre_de_guerra.*`` and
+    # ``enjambre_de_guerra.*`` (cwd inference vs sys.path) and bails.
+    # The suite is excluded from default pytest discovery via
+    # ``norecursedirs`` above; mypy follows suit.
+    "enjambre_de_guerra/",
     "hoc\\.egg-info/",
     # Phase 3 legacy suppression — these files pre-date strict typing.
     # Future phases re-enable per-module by removing from exclude. See ADR-006.
