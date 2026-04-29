@@ -781,11 +781,21 @@ class HoneycombGrid:
     # CHECKPOINTING (Phase 6.3)
     # ─────────────────────────────────────────────────────────────────────────
 
-    def checkpoint(self, path: Any, *, compress: bool = False) -> None:
+    def checkpoint(
+        self,
+        path: Any,
+        *,
+        compress: bool = False,
+        scheduler: Any = None,
+    ) -> None:
         """Serialize the grid state to ``path`` as a HMAC-signed blob.
 
         Phase 6.3: pure on-disk snapshot of the grid's logical state
         (config + per-cell state / role / history / counters / pheromones).
+        Phase 7.10: optionally bundle a ``SwarmScheduler`` snapshot via
+        the ``scheduler`` keyword so a single blob captures both the
+        grid topology and the in-flight task queue.
+
         Wire format and integrity guarantees live in
         :mod:`hoc.storage.checkpoint`. The write is atomic — the blob
         is written to ``path.tmp`` and renamed in place — so a crash
@@ -800,6 +810,13 @@ class HoneycombGrid:
             If ``True``, zlib-compress the mscs serialization before
             HMAC-signing. Roughly 50–70 % size reduction on
             grid-sized blobs at the cost of a few ms of CPU.
+        scheduler:
+            Optional ``SwarmScheduler``. When provided, its
+            :meth:`SwarmScheduler.to_dict` is embedded under the
+            ``"scheduler"`` key in the payload. Restore the scheduler
+            via :meth:`SwarmScheduler.restore_from_checkpoint`. Typed
+            as ``Any`` to avoid a hard import dependency on
+            :mod:`hoc.swarm` from this module.
         """
         from pathlib import Path as _Path
 
@@ -807,6 +824,8 @@ class HoneycombGrid:
 
         target = _Path(path)
         payload = self.to_dict()
+        if scheduler is not None:
+            payload["scheduler"] = scheduler.to_dict()
         blob = encode_blob(payload, compress=compress)
 
         # Atomic write: ``write + replace`` so a crash between bytes

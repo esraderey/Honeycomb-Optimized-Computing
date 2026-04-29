@@ -1,5 +1,5 @@
 """
-HOC Storage — checkpoint blob format (Phase 6.3).
+HOC Storage — checkpoint blob format (Phase 6.3, v2 in Phase 7.10).
 
 Pure encode / decode helpers for HMAC-signed, optionally-compressed,
 mscs-framed blobs. Knows nothing about :class:`HoneycombGrid` — the
@@ -13,8 +13,8 @@ Wire format (all fields are big-endian where applicable)::
     | byte 0  | bytes 1..32  | byte 33        | bytes 34..end      |
     +=========+==============+================+====================+
     | version | hmac_tag     | compression_fl | payload (mscs;     |
-    | (=0x01) | (32 bytes,   | (0=none,1=zlib)| optionally zlib-   |
-    |         | sha256-mac)  |                | compressed)        |
+    | (0x01,  | (32 bytes,   | (0=none,1=zlib)| optionally zlib-   |
+    |  0x02)  | sha256-mac)  |                | compressed)        |
     +---------+--------------+----------------+--------------------+
 
 The HMAC covers ``[compression_flag] || payload`` (the 33 bytes
@@ -23,6 +23,16 @@ NOT covered — a future version bump will produce a different blob
 shape; verifying the version-byte separately keeps the failure mode
 distinguishable (version mismatch → ``ValueError``; tampered body →
 :class:`MSCSecurityError`).
+
+Versioning history
+------------------
+
+- ``0x01`` (Phase 6.3): grid-only payload (config + per-cell state).
+- ``0x02`` (Phase 7.10): same wire shape, but the payload may carry
+  a top-level ``"scheduler"`` key with the SwarmScheduler task queue
+  state. Old (v1) blobs decode unchanged; new blobs always emit
+  v2 even when the scheduler key is absent so downstream consumers
+  can rely on a single advertised version.
 
 Why HMAC outside the mscs envelope?
 -----------------------------------
@@ -50,7 +60,8 @@ import mscs as _mscs
 
 from ..security import MSCSecurityError, sign_payload, verify_signature
 
-VERSION_BYTE: int = 0x01
+VERSION_BYTE: int = 0x02  # Phase 7.10: bumped from 0x01
+SUPPORTED_VERSIONS: frozenset[int] = frozenset({0x01, 0x02})
 HMAC_TAG_LEN: int = 32  # HMAC-SHA256
 HEADER_LEN: int = 1 + HMAC_TAG_LEN  # version (1) + tag (32) = 33
 
@@ -102,7 +113,7 @@ def decode_blob(blob: bytes) -> Any:
         raise ValueError(f"checkpoint blob too short: {len(blob)} bytes")
 
     version = blob[0]
-    if version != VERSION_BYTE:
+    if version not in SUPPORTED_VERSIONS:
         raise ValueError(f"unsupported checkpoint version: 0x{version:02x}")
 
     tag = blob[1 : 1 + HMAC_TAG_LEN]
@@ -133,6 +144,7 @@ __all__ = [
     "encode_blob",
     "decode_blob",
     "VERSION_BYTE",
+    "SUPPORTED_VERSIONS",
     "HMAC_TAG_LEN",
     "HEADER_LEN",
     "COMPRESSION_NONE",

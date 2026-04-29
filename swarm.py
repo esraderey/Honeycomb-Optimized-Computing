@@ -80,6 +80,47 @@ T = TypeVar("T")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# SERIALIZATION HELPERS (Phase 7.10)
+# ═══════════════════════════════════════════════════════════════════════════════
+# Used by HiveTask.to_dict / SwarmScheduler.to_dict to keep the checkpoint
+# blob free of non-portable references (callables, closures, custom
+# objects). Anything that is not a primitive / nested primitive container
+# is replaced with a small dict carrying the rejected type name so a
+# future reader can audit what was dropped.
+
+
+_UNSERIALIZABLE_KEY: str = "__hoc_unserializable__"
+
+
+def _is_safe_value(v: Any) -> bool:
+    """Return True if ``v`` is a primitive or a nested container of
+    primitives that survives a mscs round-trip without registry tweaks.
+    """
+    if v is None or isinstance(v, (bool, int, float, str, bytes)):
+        return True
+    if isinstance(v, (list, tuple)):
+        return all(_is_safe_value(item) for item in v)
+    if isinstance(v, dict):
+        return all(isinstance(k, str) and _is_safe_value(val) for k, val in v.items())
+    return False
+
+
+def _safe_serialize_value(v: Any) -> Any:
+    """Best-effort: return ``v`` if it survives a checkpoint round-trip,
+    else a sentinel describing the rejected type."""
+    if _is_safe_value(v):
+        return v
+    return {_UNSERIALIZABLE_KEY: type(v).__name__}
+
+
+def _safe_serialize_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Apply :func:`_safe_serialize_value` per key. Non-serializable
+    entries are replaced with the sentinel marker; the rest pass
+    through unchanged."""
+    return {k: _safe_serialize_value(v) for k, v in payload.items()}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # TAREAS
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -180,6 +221,75 @@ class HiveTask:
     def can_retry(self) -> bool:
         """Verifica si se puede reintentar."""
         return self.attempts < self.max_attempts
+
+    # ── Phase 7.10: checkpoint serialization ──────────────────────────
+    # Sentinel marking that a task's callback was attached pre-checkpoint
+    # but cannot be carried across the snapshot boundary. Restored tasks
+    # inherit ``callback=None``; consumers inspect
+    # ``task.callback_needs_reattach`` to decide whether to rebind.
+    SENTINEL_CALLBACK_REATTACH: str = "<callback-reattach-required>"
+
+    def to_dict(self) -> dict[str, Any]:
+        """Phase 7.10: serialize this task for the checkpoint blob.
+
+        Callables (``callback``, lambdas inside ``payload``) cannot
+        survive a checkpoint round-trip — they're replaced with a
+        sentinel marker so a future operator can identify what needs
+        rebinding. Primitive fields and HexCoord are preserved.
+        """
+        return {
+            "task_id": self.task_id,
+            "task_type": self.task_type,
+            "priority": self.priority,
+            "created_at": self.created_at,
+            "target_cell": self.target_cell.to_dict() if self.target_cell else None,
+            "payload": _safe_serialize_payload(self.payload),
+            "state": self.state.name,
+            "assigned_to": self.assigned_to.to_dict() if self.assigned_to else None,
+            "attempts": self.attempts,
+            "max_attempts": self.max_attempts,
+            "timeout_seconds": self.timeout_seconds,
+            "callback": self.SENTINEL_CALLBACK_REATTACH if self.callback is not None else None,
+            "result": _safe_serialize_value(self.result),
+            "error": self.error,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> HiveTask:
+        """Phase 7.10: rebuild a HiveTask from its checkpoint dict.
+
+        ``callback`` is reset to ``None`` regardless of whether the
+        original task had one — the sentinel only signals that the
+        original task carried a callback. Consumers can detect this by
+        reading ``task.callback_needs_reattach`` on the restored task.
+        """
+        target_cell = HexCoord.from_dict(data["target_cell"]) if data.get("target_cell") else None
+        assigned_to = HexCoord.from_dict(data["assigned_to"]) if data.get("assigned_to") else None
+        state = TaskState[data["state"]]
+        task = cls(
+            priority=data["priority"],
+            created_at=data["created_at"],
+            task_id=data["task_id"],
+            task_type=data["task_type"],
+            target_cell=target_cell,
+            payload=data.get("payload", {}),
+            state=state,
+            assigned_to=assigned_to,
+            attempts=data.get("attempts", 0),
+            max_attempts=data.get("max_attempts", 3),
+            timeout_seconds=data.get("timeout_seconds", 30.0),
+            callback=None,
+            result=data.get("result"),
+            error=data.get("error"),
+        )
+        # ``object.__setattr__`` to bypass the dataclass's tightened
+        # __setattr__ — the flag is metadata, not a real field.
+        object.__setattr__(
+            task,
+            "callback_needs_reattach",
+            data.get("callback") == cls.SENTINEL_CALLBACK_REATTACH,
+        )
+        return task
 
     # ── Phase 4.2: reified transitions (additive API) ─────────────────
     # These methods are functionally equivalent to ``self.state = X`` —
@@ -1201,3 +1311,85 @@ class SwarmScheduler:
             self._task_index.clear()
 
         logger.info("SwarmScheduler shutdown complete")
+
+    # ── Phase 7.10: checkpoint serialization ──────────────────────────
+
+    SERIALIZATION_VERSION: str = "1.0"
+    """Schema version of the SwarmScheduler.to_dict payload. Independent
+    of the checkpoint blob version (storage/checkpoint.py) — the blob
+    version describes the wire frame, this one describes the inner
+    scheduler dict shape."""
+
+    def to_dict(self) -> dict[str, Any]:
+        """Phase 7.10: serialize the scheduler's task queue + counters.
+
+        Behaviors are *not* serialized. They're rebuilt on restore from
+        the grid + config (the role assignment is randomized, but the
+        ratio reproduces the original distribution within ±1 cell).
+        Same for the balancer state (load distribution is recomputed
+        on the next ``rebalance_if_needed`` call).
+        """
+        with self._lock:
+            return {
+                "version": self.SERIALIZATION_VERSION,
+                "tick_count": self._tick_count,
+                "tasks_completed": self._tasks_completed,
+                "tasks_failed": self._tasks_failed,
+                "queue": [t.to_dict() for t in self._task_queue],
+            }
+
+    @classmethod
+    def from_dict(
+        cls,
+        data: dict[str, Any],
+        grid: HoneycombGrid,
+        nectar_flow: NectarFlow,
+        config: SwarmConfig | None = None,
+    ) -> SwarmScheduler:
+        """Phase 7.10: rebuild a scheduler from a previously serialized
+        state. Behaviors and balancer are freshly initialized from the
+        provided ``grid`` + ``config``; the queue + index + counters
+        come from ``data``."""
+        scheduler = cls(grid, nectar_flow, config)
+        scheduler._tick_count = data.get("tick_count", 0)
+        scheduler._tasks_completed = data.get("tasks_completed", 0)
+        scheduler._tasks_failed = data.get("tasks_failed", 0)
+
+        with scheduler._lock:
+            scheduler._task_queue = []
+            scheduler._task_index = {}
+            for task_dict in data.get("queue", []):
+                task = HiveTask.from_dict(task_dict)
+                heapq.heappush(scheduler._task_queue, task)
+                scheduler._task_index[task.task_id] = task
+
+        return scheduler
+
+    @classmethod
+    def restore_from_checkpoint(
+        cls,
+        path: Any,
+        grid: HoneycombGrid,
+        nectar_flow: NectarFlow,
+        config: SwarmConfig | None = None,
+    ) -> SwarmScheduler | None:
+        """Phase 7.10: load a SwarmScheduler from a checkpoint blob.
+
+        Returns ``None`` if the blob has no ``"scheduler"`` key (e.g.
+        a v1 blob from Phase 6 or a v2 blob written before scheduler
+        registration). Decoder errors propagate verbatim — caller is
+        expected to handle ``MSCSecurityError`` / ``ValueError`` the
+        same way as :meth:`HoneycombGrid.restore_from_checkpoint`.
+        """
+        from pathlib import Path as _Path
+
+        from .storage.checkpoint import decode_blob
+
+        blob = _Path(path).read_bytes()
+        payload = decode_blob(blob)
+        if not isinstance(payload, dict):
+            return None
+        sched_data = payload.get("scheduler")
+        if sched_data is None:
+            return None
+        return cls.from_dict(sched_data, grid, nectar_flow, config)
