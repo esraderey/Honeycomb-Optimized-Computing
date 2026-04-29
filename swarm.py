@@ -1029,6 +1029,142 @@ class SwarmBalancer:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIOR INDEX (Phase 7.5 — O(n·m) → O(m·log n))
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class BehaviorIndex:
+    """Per-behavior priority-ordered task index.
+
+    Replaces the O(n·m) filter loop in :meth:`SwarmScheduler.tick` with
+    O(m·log n) heap operations: each registered behavior has its own
+    min-heap, and submit_task inserts the task only into heaps of
+    behaviors that would actually consider it (type-routing).
+
+    The API is intentionally minimal — three operations cover the
+    scheduler's needs:
+
+    - :meth:`insert` adds a task to the heap of one behavior. The
+      scheduler calls this once per matching behavior at submit time.
+    - :meth:`pop_best` returns and *claims* the highest-priority active
+      task for a behavior. Claim is enforced via a tombstone set so
+      other behaviors' heaps lazily skip the entry on their next pop.
+    - :meth:`remove` tombstones a task by id (used for cancel /
+      complete / fail-no-retry).
+
+    The tombstone set is bounded by :meth:`compact`, which the
+    scheduler invokes every N ticks (configurable). Without compaction,
+    tombstones accumulate across ticks but pop_best stays correct via
+    lazy deletion — compaction is purely for memory pressure.
+
+    Heap entry layout: ``(priority, sequence, task_id, task)``. The
+    ``sequence`` counter breaks ties FIFO. Note that ``task.priority``
+    follows the existing convention (``CRITICAL=0``, ``BACKGROUND=4``)
+    so a min-heap returns the highest-importance task first without
+    inversion.
+    """
+
+    __slots__ = ("_counter", "_heaps", "_tombstoned")
+
+    def __init__(self) -> None:
+        self._heaps: dict[BeeBehavior, list[tuple[int, int, str, HiveTask]]] = {}
+        self._tombstoned: set[str] = set()
+        self._counter: int = 0
+
+    def register_behavior(self, behavior: BeeBehavior) -> None:
+        """Allocate an empty heap for ``behavior``. Idempotent."""
+        self._heaps.setdefault(behavior, [])
+
+    def unregister_behavior(self, behavior: BeeBehavior) -> None:
+        """Drop ``behavior``'s heap. Pending tasks still live in the
+        scheduler's main queue; only the index reference is gone."""
+        self._heaps.pop(behavior, None)
+
+    def insert(self, task: HiveTask, behavior: BeeBehavior) -> None:
+        """Add ``task`` to ``behavior``'s heap.
+
+        Re-inserting a previously tombstoned task (the FAILED → PENDING
+        retry path) clears the tombstone so the new entry is visible.
+        Behaviors that haven't been registered are auto-registered with
+        an empty heap; this lets the scheduler add behaviors lazily
+        without an explicit register step.
+        """
+        if behavior not in self._heaps:
+            self._heaps[behavior] = []
+        self._tombstoned.discard(task.task_id)
+        self._counter += 1
+        heapq.heappush(
+            self._heaps[behavior],
+            (task.priority, self._counter, task.task_id, task),
+        )
+
+    def pop_best(self, behavior: BeeBehavior) -> HiveTask | None:
+        """Return and claim the highest-priority active task for
+        ``behavior``. Returns ``None`` if the heap is empty (or all
+        entries are tombstoned). Lazy-cleans tombstoned entries on
+        the way down."""
+        heap = self._heaps.get(behavior)
+        if heap is None:
+            return None
+        while heap:
+            top_id = heap[0][2]
+            if top_id in self._tombstoned:
+                heapq.heappop(heap)
+                continue
+            entry = heapq.heappop(heap)
+            self._tombstoned.add(top_id)
+            return entry[3]
+        return None
+
+    def remove(self, task_id: str) -> bool:
+        """Tombstone ``task_id`` so subsequent pop_best calls skip it.
+
+        Returns ``True`` if the task was active, ``False`` if it was
+        already tombstoned (lets callers detect double-removes
+        cheaply)."""
+        if task_id in self._tombstoned:
+            return False
+        self._tombstoned.add(task_id)
+        return True
+
+    def compact(self) -> int:
+        """Filter tombstoned entries from all heaps and clear the
+        tombstone set. Returns the count of pruned heap entries.
+
+        Without compaction tombstones accumulate as dead heap entries
+        that pop_best skips; compaction reclaims that space. Cheap
+        relative to the savings of the new tick path — the scheduler
+        runs it every 10 ticks (one compact per ~10× insert+pop
+        rounds)."""
+        if not self._tombstoned:
+            return 0
+        removed_total = 0
+        for heap in self._heaps.values():
+            before = len(heap)
+            heap[:] = [e for e in heap if e[2] not in self._tombstoned]
+            heapq.heapify(heap)
+            removed_total += before - len(heap)
+        self._tombstoned.clear()
+        return removed_total
+
+    def size_for(self, behavior: BeeBehavior) -> int:
+        """Number of active (non-tombstoned) entries in ``behavior``'s
+        heap. Counts each task once even if it appears multiple times
+        — duplicates are an edge case (e.g. retry re-insert before
+        compaction); the live count is what matters for callers."""
+        heap = self._heaps.get(behavior)
+        if heap is None:
+            return 0
+        seen: set[str] = set()
+        for entry in heap:
+            tid = entry[2]
+            if tid in self._tombstoned or tid in seen:
+                continue
+            seen.add(tid)
+        return len(seen)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # SCHEDULER PRINCIPAL
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1044,6 +1180,11 @@ class SwarmScheduler:
     - Retroalimentación por feromonas
     """
 
+    # Phase 7.5: how often to compact the BehaviorIndex's tombstone set.
+    # Larger values trade memory for fewer compaction passes; 10 ticks
+    # keeps compaction overhead well below the win from O(log n) pops.
+    INDEX_COMPACT_INTERVAL_TICKS: int = 10
+
     def __init__(
         self, grid: HoneycombGrid, nectar_flow: NectarFlow, config: SwarmConfig | None = None
     ):
@@ -1057,6 +1198,11 @@ class SwarmScheduler:
 
         # Comportamientos por celda
         self._behaviors: dict[HexCoord, BeeBehavior] = {}
+
+        # Phase 7.5: secondary index (per-behavior priority heap) that
+        # the tick() loop consults instead of filtering pending_tasks
+        # for every behavior.
+        self._behavior_index: BehaviorIndex = BehaviorIndex()
 
         # Balanceador
         self._balancer = SwarmBalancer(grid, self.config)
@@ -1107,6 +1253,56 @@ class SwarmScheduler:
             else:
                 self._behaviors[cell.coord] = GuardBehavior(cell, self.nectar)
 
+        # Phase 7.5: register every behavior with the secondary index
+        # so submit_task can route into per-behavior heaps.
+        for behavior in self._behaviors.values():
+            self._behavior_index.register_behavior(behavior)
+
+    # ── Phase 7.5: type-routing helper for BehaviorIndex ──────────────
+    # Decides which registered behaviors a freshly-submitted task should
+    # be inserted under. Mirrors the implicit filter from each
+    # behavior's :meth:`select_task` so the index never offers a task
+    # the behavior would refuse anyway. Routing rules:
+    # - ``target_cell`` is set: ONLY the behavior at that exact coord
+    #   (if any), and only if that behavior accepts the task_type.
+    # - ``target_cell`` is None: every registered behavior whose
+    #   ``select_task`` would accept the task_type.
+
+    _NURSE_TYPES: frozenset[str] = frozenset({"spawn", "warmup"})
+    _SCOUT_TYPES: frozenset[str] = frozenset({"explore"})
+    _GUARD_TYPES: frozenset[str] = frozenset({"validate"})
+
+    @classmethod
+    def _behavior_accepts_type(cls, behavior: BeeBehavior, task_type: str) -> bool:
+        """Return True if ``behavior``'s select_task would consider a
+        task of ``task_type`` (target_cell match handled separately)."""
+        if isinstance(behavior, NurseBehavior):
+            return task_type in cls._NURSE_TYPES
+        if isinstance(behavior, ScoutBehavior):
+            # Scouts also accept distant-target tasks but those carry a
+            # target_cell and follow the pinned-routing branch above —
+            # at this point we only see global tasks, so type alone.
+            return task_type in cls._SCOUT_TYPES
+        if isinstance(behavior, GuardBehavior):
+            return task_type in cls._GUARD_TYPES
+        # ForagerBehavior is the catch-all. It takes any task type
+        # except those that another behavior class specializes in.
+        if isinstance(behavior, ForagerBehavior):
+            return task_type not in (cls._NURSE_TYPES | cls._SCOUT_TYPES | cls._GUARD_TYPES)
+        return False
+
+    def _route_task_to_behaviors(self, task: HiveTask) -> list[BeeBehavior]:
+        """Phase 7.5: decide which behaviors should receive ``task`` in
+        their BehaviorIndex heap."""
+        if task.target_cell is not None:
+            pinned = self._behaviors.get(task.target_cell)
+            if pinned is None:
+                return []
+            return [pinned] if self._behavior_accepts_type(pinned, task.task_type) else []
+        return [
+            b for b in self._behaviors.values() if self._behavior_accepts_type(b, task.task_type)
+        ]
+
     def submit_task(
         self,
         task_type: str,
@@ -1154,6 +1350,12 @@ class SwarmScheduler:
             heapq.heappush(self._task_queue, task)
             self._task_index[task.task_id] = task
 
+            # Phase 7.5: insert into the BehaviorIndex so tick() can
+            # pop in O(log n) instead of filtering pending_tasks for
+            # every behavior.
+            for behavior in self._route_task_to_behaviors(task):
+                self._behavior_index.insert(task, behavior)
+
         logger.debug(f"Task submitted: {task.task_id} ({task_type})")
         return task
 
@@ -1189,12 +1391,22 @@ class SwarmScheduler:
         task = self._task_index.get(task_id)
         if task and task.state == TaskState.PENDING:
             task.state = TaskState.CANCELLED
+            # Phase 7.5: tombstone in BehaviorIndex too so a tick that
+            # races cancel doesn't pop the cancelled task.
+            self._behavior_index.remove(task_id)
             return True
         return False
 
     def tick(self) -> dict[str, Any]:
         """
         Ejecuta un tick del scheduler.
+
+        Phase 7.5: replaces the O(n·m) filter loop (every behavior
+        scans every pending task) with O(m·log n) pop_best calls
+        against :class:`BehaviorIndex`. Behaviors still see
+        ``select_task([candidate])`` for the probabilistic refusal
+        path — refused tasks are re-inserted into the index so the
+        next tick can offer them again.
 
         Returns:
             Estadísticas del tick
@@ -1210,47 +1422,52 @@ class SwarmScheduler:
         }
 
         with self._lock:
-            # Obtener tareas pendientes
-            pending_tasks = [t for t in self._task_queue if t.state == TaskState.PENDING]
-            # Tareas ya asignadas en este tick (cada tarea solo se ejecuta una vez por tick)
-            claimed_this_tick: set[str] = set()
-
-            # Distribuir tareas a comportamientos
-            for coord, behavior in self._behaviors.items():
-                # Filtrar tareas relevantes y no asignadas aún en este tick
-                available = [
-                    t
-                    for t in pending_tasks
-                    if (t.target_cell is None or t.target_cell == coord)
-                    and t.task_id not in claimed_this_tick
-                ]
-
-                # Seleccionar tarea
-                task = behavior.select_task(available)
-                if not task:
+            # Phase 7.5: per-behavior pop_best instead of filter+select.
+            for _coord, behavior in self._behaviors.items():
+                task = self._behavior_index.pop_best(behavior)
+                if task is None:
                     continue
 
-                # Reservar para que ningún otro behavior la tome en este tick
-                claimed_this_tick.add(task.task_id)
+                # Pre-Phase-7.5 the tick() filter explicitly required
+                # ``state == PENDING``. Test fixtures and external
+                # mutators can flip a queued task to a terminal state
+                # without going through the scheduler — pop_best is
+                # unaware. Drop those silently here; they get pruned by
+                # the cleanup loop below.
+                if task.state is not TaskState.PENDING:
+                    continue
+
+                # Preserve the probabilistic-refusal contract from
+                # :meth:`BeeBehavior.select_task`. If the behavior
+                # declines the offered task, re-insert (which clears
+                # the tombstone) so the next tick can retry.
+                selected = behavior.select_task([task])
+                if selected is None:
+                    self._behavior_index.insert(task, behavior)
+                    continue
 
                 # Ejecutar
                 results["tasks_processed"] += 1
-                success = behavior.execute_task(task)
+                success = behavior.execute_task(selected)
 
                 if success:
                     results["tasks_completed"] += 1
                     self._tasks_completed += 1
 
                     # Callback si existe
-                    if task.callback:
+                    if selected.callback:
                         try:
-                            task.callback(task.result)
+                            selected.callback(selected.result)
                         except Exception as e:
                             logger.error(f"Task callback error: {sanitize_error(e)}")
                 else:
                     # Reintentar o marcar como fallida
-                    if task.can_retry():
-                        task.state = TaskState.PENDING
+                    if selected.can_retry():
+                        selected.state = TaskState.PENDING
+                        # Re-insert into the index so the retry is
+                        # visible on the next tick.
+                        for b in self._route_task_to_behaviors(selected):
+                            self._behavior_index.insert(selected, b)
                     else:
                         results["tasks_failed"] += 1
                         self._tasks_failed += 1
@@ -1263,11 +1480,22 @@ class SwarmScheduler:
             for t in self._task_queue:
                 if t.state not in (TaskState.PENDING, TaskState.RUNNING):
                     self._task_index.pop(t.task_id, None)
+                    # Phase 7.5: also tombstone in the BehaviorIndex so
+                    # cancelled / completed / non-retryable failed
+                    # tasks can't surface from a heap.
+                    self._behavior_index.remove(t.task_id)
 
             self._task_queue = [
                 t for t in self._task_queue if t.state in (TaskState.PENDING, TaskState.RUNNING)
             ]
             heapq.heapify(self._task_queue)
+
+            # Phase 7.5: bound tombstone memory by compacting heaps
+            # every INDEX_COMPACT_INTERVAL_TICKS. Cheap relative to the
+            # tick savings; pop_best stays correct between compacts via
+            # lazy deletion.
+            if self._tick_count % self.INDEX_COMPACT_INTERVAL_TICKS == 0:
+                self._behavior_index.compact()
 
         # Balancear carga
         if self._balancer.rebalance_if_needed(self._tick_count):
@@ -1362,6 +1590,13 @@ class SwarmScheduler:
                 task = HiveTask.from_dict(task_dict)
                 heapq.heappush(scheduler._task_queue, task)
                 scheduler._task_index[task.task_id] = task
+                # Phase 7.5: re-populate the BehaviorIndex so the
+                # restored scheduler's tick() finds tasks in O(log n).
+                # Only PENDING tasks are eligible for selection — RUNNING
+                # tasks won't be picked by tick() until they finish, so
+                # we still index them in case the worker re-queues them.
+                for behavior in scheduler._route_task_to_behaviors(task):
+                    scheduler._behavior_index.insert(task, behavior)
 
         return scheduler
 
