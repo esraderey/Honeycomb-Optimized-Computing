@@ -59,6 +59,7 @@ from enum import Enum, auto
 from typing import (
     Any,
     ClassVar,
+    Literal,
     TypeVar,
 )
 
@@ -785,6 +786,21 @@ class SwarmConfig:
     task_timeout_seconds: float = 30.0
     max_task_retries: int = 3
 
+    # Phase 7.3: backpressure policy when ``max_queue_size`` is hit.
+    # ``raise`` is the pre-Phase-7 behaviour and remains the default for
+    # safety: callers see a hard error and can decide how to react.
+    # ``drop_oldest`` evicts the lowest-priority task to make room for the
+    # newcomer (highest-priority new tasks displace stale background work).
+    # ``drop_newest`` rejects the new task silently (caller gets a sentinel
+    # ``HiveTask`` with ``state=CANCELLED``).
+    # ``block`` polls every ``queue_full_block_poll_s`` seconds for up to
+    # ``queue_full_block_timeout_s`` waiting for room; only meaningful for
+    # the sync path (the async path will get a true asyncio.Queue in a
+    # future Phase 7.x).
+    queue_full_policy: Literal["raise", "drop_oldest", "drop_newest", "block"] = "raise"
+    queue_full_block_timeout_s: float = 5.0
+    queue_full_block_poll_s: float = 0.005
+
     # Phase 2: rate limiting para cerrar vectores de DoS contra el API público.
     # `submit_rate_per_second` permite ráfagas iniciales via `burst` — default
     # burst = 2× rate para no romper cargas normales.
@@ -1214,6 +1230,11 @@ class SwarmScheduler:
         self._tick_count = 0
         self._tasks_completed = 0
         self._tasks_failed = 0
+        # Phase 7.3: cumulative count of tasks dropped at submit time
+        # because the queue was full and the policy decided to evict
+        # rather than raise. Exposed via ``get_stats()`` so callers can
+        # detect backpressure.
+        self._tasks_dropped = 0
         self._lock = threading.RLock()
 
         # Phase 2: rate limiting de APIs públicas para mitigar DoS.
@@ -1346,10 +1367,16 @@ class SwarmScheduler:
             callback=callback,
         )
 
-        with self._lock:
-            if len(self._task_queue) >= self.config.max_queue_size:
-                raise RuntimeError("Task queue full")
+        # Phase 7.3: backpressure policy dispatch happens BEFORE the
+        # heap push so the policy decides whether the new task lands.
+        if not self._reserve_queue_slot(task):
+            # Drop policy returned False → don't enqueue this task. The
+            # caller still gets a HiveTask back (state=CANCELLED) so
+            # signatures stay compatible with the pre-Phase-7.3 contract.
+            task.state = TaskState.CANCELLED
+            return task
 
+        with self._lock:
             heapq.heappush(self._task_queue, task)
             self._task_index[task.task_id] = task
 
@@ -1361,6 +1388,82 @@ class SwarmScheduler:
 
         logger.debug(f"Task submitted: {task.task_id} ({task_type})")
         return task
+
+    def _reserve_queue_slot(self, incoming: HiveTask) -> bool:
+        """Phase 7.3: enforce ``queue_full_policy`` and return whether
+        ``incoming`` should be enqueued. Increments
+        ``_tasks_dropped`` when the policy evicts an existing task or
+        rejects the new one.
+
+        Policy semantics:
+
+        - ``"raise"`` — preserves pre-Phase-7.3 behaviour: hard error
+          when full.
+        - ``"drop_oldest"`` — find the **lowest-priority** task (largest
+          priority value, hence the worst by HOC's CRITICAL=0
+          convention) and evict it. The new task is enqueued; the
+          dropped task is marked ``CANCELLED``.
+        - ``"drop_newest"`` — return ``False``; caller marks the new
+          task ``CANCELLED`` and skips the heap push.
+        - ``"block"`` — poll until room frees up or
+          ``queue_full_block_timeout_s`` elapses; raises
+          :class:`RuntimeError` on timeout.
+        """
+        max_size = self.config.max_queue_size
+        policy = self.config.queue_full_policy
+
+        with self._lock:
+            if len(self._task_queue) < max_size:
+                return True
+
+            if policy == "raise":
+                raise RuntimeError("Task queue full")
+
+            if policy == "drop_oldest":
+                # The heap orders by priority ascending (CRITICAL=0 is
+                # smallest, BACKGROUND=4 is largest). Lowest-priority
+                # task = largest priority value = worst candidate to
+                # keep. Linear scan is O(n) but Phase 7.3 trades that
+                # for the simpler invariant: heapq has no built-in
+                # "remove worst" op.
+                worst_idx = max(
+                    range(len(self._task_queue)),
+                    key=lambda i: (
+                        self._task_queue[i].priority,
+                        -self._task_queue[i].created_at,
+                    ),
+                )
+                dropped = self._task_queue.pop(worst_idx)
+                heapq.heapify(self._task_queue)
+                dropped.state = TaskState.CANCELLED
+                self._task_index.pop(dropped.task_id, None)
+                self._behavior_index.remove(dropped.task_id)
+                self._tasks_dropped += 1
+                return True
+
+            if policy == "drop_newest":
+                self._tasks_dropped += 1
+                return False
+
+            # policy == "block"
+            deadline = time.time() + self.config.queue_full_block_timeout_s
+            poll = self.config.queue_full_block_poll_s
+
+        # Lock dropped for the polling sleep. Re-acquire on each pass
+        # to check whether room freed up.
+        if policy == "block":
+            while time.time() < deadline:
+                time.sleep(poll)
+                with self._lock:
+                    if len(self._task_queue) < max_size:
+                        return True
+            raise RuntimeError(
+                "Task queue full; block policy timed out after "
+                f"{self.config.queue_full_block_timeout_s}s"
+            )
+
+        # Unknown policy — should be caught by Literal type at edit time.
+        raise RuntimeError(f"unknown queue_full_policy: {policy!r}")
 
     def execute_on_cell(self, coord: HexCoord, task: HiveTask) -> bool:
         """
@@ -1546,6 +1649,10 @@ class SwarmScheduler:
             "pending_tasks": self.get_pending_count(),
             "tasks_completed": self._tasks_completed,
             "tasks_failed": self._tasks_failed,
+            # Phase 7.3: cumulative drops attributable to the
+            # ``queue_full_policy``. 0 under the default ``"raise"``
+            # policy (which simply raises).
+            "tasks_dropped": self._tasks_dropped,
             "behaviors": dict(behavior_counts),
             "balancer": self._balancer.get_stats(),
         }
@@ -1613,6 +1720,10 @@ class SwarmScheduler:
                 "tick_count": self._tick_count,
                 "tasks_completed": self._tasks_completed,
                 "tasks_failed": self._tasks_failed,
+                # Phase 7.3: include drops counter in the snapshot so
+                # restored schedulers preserve their backpressure
+                # history.
+                "tasks_dropped": self._tasks_dropped,
                 "queue": [t.to_dict() for t in self._task_queue],
             }
 
@@ -1632,6 +1743,9 @@ class SwarmScheduler:
         scheduler._tick_count = data.get("tick_count", 0)
         scheduler._tasks_completed = data.get("tasks_completed", 0)
         scheduler._tasks_failed = data.get("tasks_failed", 0)
+        # Phase 7.3: restore drops counter (defaults to 0 for v1 blobs
+        # written before the field existed).
+        scheduler._tasks_dropped = data.get("tasks_dropped", 0)
 
         with scheduler._lock:
             scheduler._task_queue = []
