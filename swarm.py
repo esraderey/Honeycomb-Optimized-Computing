@@ -1367,103 +1367,88 @@ class SwarmScheduler:
             callback=callback,
         )
 
-        # Phase 7.3: backpressure policy dispatch happens BEFORE the
-        # heap push so the policy decides whether the new task lands.
-        if not self._reserve_queue_slot(task):
-            # Drop policy returned False → don't enqueue this task. The
-            # caller still gets a HiveTask back (state=CANCELLED) so
-            # signatures stay compatible with the pre-Phase-7.3 contract.
-            task.state = TaskState.CANCELLED
-            return task
+        # Phase 7.3 / Phase 7 followup race fix: el bound check + el
+        # push DEBEN ocurrir bajo el mismo lock acquisition. Versiones
+        # anteriores hacían ``if _reserve_queue_slot(): with lock:
+        # heappush(...)`` con dos grabs separados — un thread podía
+        # pasar el check, soltar el lock, otro pasar el check, los
+        # dos hacer push, queue size = cap + 1.
+        #
+        # Aquí: un único loop que adquiere el lock, decide qué hacer,
+        # y o bien push y return, o aplica policy, o suelta el lock
+        # para sleep+retry (block policy only). El stress test
+        # `test_threaded_race_against_drop_oldest_count_invariant`
+        # detectó esta race y motiva esta refactor.
 
-        with self._lock:
-            heapq.heappush(self._task_queue, task)
-            self._task_index[task.task_id] = task
-
-            # Phase 7.5: insert into the BehaviorIndex so tick() can
-            # pop in O(log n) instead of filtering pending_tasks for
-            # every behavior.
-            for behavior in self._route_task_to_behaviors(task):
-                self._behavior_index.insert(task, behavior)
-
-        logger.debug(f"Task submitted: {task.task_id} ({task_type})")
-        return task
-
-    def _reserve_queue_slot(self, incoming: HiveTask) -> bool:
-        """Phase 7.3: enforce ``queue_full_policy`` and return whether
-        ``incoming`` should be enqueued. Increments
-        ``_tasks_dropped`` when the policy evicts an existing task or
-        rejects the new one.
-
-        Policy semantics:
-
-        - ``"raise"`` — preserves pre-Phase-7.3 behaviour: hard error
-          when full.
-        - ``"drop_oldest"`` — find the **lowest-priority** task (largest
-          priority value, hence the worst by HOC's CRITICAL=0
-          convention) and evict it. The new task is enqueued; the
-          dropped task is marked ``CANCELLED``.
-        - ``"drop_newest"`` — return ``False``; caller marks the new
-          task ``CANCELLED`` and skips the heap push.
-        - ``"block"`` — poll until room frees up or
-          ``queue_full_block_timeout_s`` elapses; raises
-          :class:`RuntimeError` on timeout.
-        """
         max_size = self.config.max_queue_size
         policy = self.config.queue_full_policy
+        deadline = (
+            time.time() + self.config.queue_full_block_timeout_s if policy == "block" else None
+        )
 
-        with self._lock:
-            if len(self._task_queue) < max_size:
-                return True
+        while True:
+            with self._lock:
+                if len(self._task_queue) < max_size:
+                    # Hay espacio — push y return atomically.
+                    heapq.heappush(self._task_queue, task)
+                    self._task_index[task.task_id] = task
+                    # Phase 7.5: insert into the BehaviorIndex so tick()
+                    # can pop in O(log n) instead of filtering
+                    # pending_tasks for every behavior.
+                    for behavior in self._route_task_to_behaviors(task):
+                        self._behavior_index.insert(task, behavior)
+                    logger.debug(f"Task submitted: {task.task_id} ({task_type})")
+                    return task
 
-            if policy == "raise":
-                raise RuntimeError("Task queue full")
+                # Queue full. Aplicar policy bajo el mismo lock.
+                if policy == "raise":
+                    raise RuntimeError("Task queue full")
 
-            if policy == "drop_oldest":
-                # The heap orders by priority ascending (CRITICAL=0 is
-                # smallest, BACKGROUND=4 is largest). Lowest-priority
-                # task = largest priority value = worst candidate to
-                # keep. Linear scan is O(n) but Phase 7.3 trades that
-                # for the simpler invariant: heapq has no built-in
-                # "remove worst" op.
-                worst_idx = max(
-                    range(len(self._task_queue)),
-                    key=lambda i: (
-                        self._task_queue[i].priority,
-                        -self._task_queue[i].created_at,
-                    ),
+                if policy == "drop_oldest":
+                    # The heap orders by priority ascending (CRITICAL=0 is
+                    # smallest, BACKGROUND=4 is largest). Lowest-priority
+                    # task = largest priority value = worst candidate to
+                    # keep. Linear scan is O(n) — heapq has no built-in
+                    # "remove worst" op.
+                    worst_idx = max(
+                        range(len(self._task_queue)),
+                        key=lambda i: (
+                            self._task_queue[i].priority,
+                            -self._task_queue[i].created_at,
+                        ),
+                    )
+                    dropped = self._task_queue.pop(worst_idx)
+                    heapq.heapify(self._task_queue)
+                    dropped.state = TaskState.CANCELLED
+                    self._task_index.pop(dropped.task_id, None)
+                    self._behavior_index.remove(dropped.task_id)
+                    self._tasks_dropped += 1
+                    # Push el nuevo en el slot recién liberado, todo
+                    # bajo el mismo lock.
+                    heapq.heappush(self._task_queue, task)
+                    self._task_index[task.task_id] = task
+                    for behavior in self._route_task_to_behaviors(task):
+                        self._behavior_index.insert(task, behavior)
+                    return task
+
+                if policy == "drop_newest":
+                    self._tasks_dropped += 1
+                    task.state = TaskState.CANCELLED
+                    return task
+
+                # policy == "block": fall through al sleep + retry.
+                # El lock se libera al salir del ``with`` block.
+
+            # Llegamos aquí solo si policy == "block". Sleep + reintentar
+            # en el siguiente iter del while.
+            if deadline is None:  # defensa: policy no soportada
+                raise RuntimeError(f"unknown queue_full_policy: {policy!r}")
+            if time.time() >= deadline:
+                raise RuntimeError(
+                    "Task queue full; block policy timed out after "
+                    f"{self.config.queue_full_block_timeout_s}s"
                 )
-                dropped = self._task_queue.pop(worst_idx)
-                heapq.heapify(self._task_queue)
-                dropped.state = TaskState.CANCELLED
-                self._task_index.pop(dropped.task_id, None)
-                self._behavior_index.remove(dropped.task_id)
-                self._tasks_dropped += 1
-                return True
-
-            if policy == "drop_newest":
-                self._tasks_dropped += 1
-                return False
-
-            # policy == "block"
-            deadline = time.time() + self.config.queue_full_block_timeout_s
-            poll = self.config.queue_full_block_poll_s
-
-        # Lock dropped for the polling sleep. Re-acquire on each pass
-        # to check whether room freed up.
-        if policy == "block":
-            while time.time() < deadline:
-                time.sleep(poll)
-                with self._lock:
-                    if len(self._task_queue) < max_size:
-                        return True
-            raise RuntimeError(
-                "Task queue full; block policy timed out after "
-                f"{self.config.queue_full_block_timeout_s}s"
-            )
-
-        # Unknown policy — should be caught by Literal type at edit time.
-        raise RuntimeError(f"unknown queue_full_policy: {policy!r}")
+            time.sleep(self.config.queue_full_block_poll_s)
 
     def execute_on_cell(self, coord: HexCoord, task: HiveTask) -> bool:
         """

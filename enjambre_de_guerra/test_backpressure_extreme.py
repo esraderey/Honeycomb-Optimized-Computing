@@ -109,6 +109,136 @@ class TestBackpressureExtreme:
                     timeouts += 1
         assert timeouts == 10, f"expected 10 timeouts, got {timeouts}"
 
+    # ───────────────────────────────────────────────────────────────────
+    # Edge cases — capacity en los bordes + races sobre el bound check
+    # ───────────────────────────────────────────────────────────────────
+
+    def test_capacity_1_drop_oldest_invariant(self):
+        """capacity=1 es el límite degenerado: cada submit
+        beyond el primero evicta al previo. dropped == N - 1."""
+        N = 1_000
+        _, _, sched = build_loaded_scheduler(
+            radius=1, max_queue_size=1, queue_full_policy="drop_oldest"
+        )
+        for _ in range(N):
+            sched.submit_task("compute", {})
+        assert sched.get_queue_size() == 1
+        assert sched.get_stats()["tasks_dropped"] == N - 1
+
+    def test_capacity_n_plus_one_no_drops(self):
+        """capacity == N + 1 (justo arriba del exact-fit): cero drops.
+        Validate el off-by-one no mete drops espurios."""
+        N = 500
+        _, _, sched = build_loaded_scheduler(
+            radius=1, max_queue_size=N + 1, queue_full_policy="drop_oldest"
+        )
+        for _ in range(N):
+            sched.submit_task("compute", {})
+        assert sched.get_queue_size() == N
+        assert sched.get_stats()["tasks_dropped"] == 0
+
+    def test_capacity_exact_fit_no_drops(self):
+        """capacity == N exact: el último submit cabe sin drop.
+        Otro chequeo de off-by-one — el comparison es ``len(queue) >=
+        max_queue_size`` (overflow strict), not ``> max_queue_size``."""
+        N = 500
+        _, _, sched = build_loaded_scheduler(
+            radius=1, max_queue_size=N, queue_full_policy="drop_oldest"
+        )
+        for _ in range(N):
+            sched.submit_task("compute", {})
+        assert sched.get_queue_size() == N
+        assert sched.get_stats()["tasks_dropped"] == 0
+        # Now one more triggers exactly one drop.
+        sched.submit_task("compute", {})
+        assert sched.get_queue_size() == N
+        assert sched.get_stats()["tasks_dropped"] == 1
+
+    def test_threaded_race_against_drop_oldest_count_invariant(self):
+        """8 threads × 1000 submissions cada uno = 8000 submissions
+        contra capacity=100 + drop_oldest. La suma final
+        ``tasks_dropped + queue_size`` debe ser exactamente 8000.
+
+        Si el lock entre el bound-check y el drop-oldest tuviera
+        race, esto produciría un counter desync detectable."""
+        cap = 100
+        N_THREADS = 8
+        PER_THREAD = 1_000
+        _, _, sched = build_loaded_scheduler(
+            radius=1, max_queue_size=cap, queue_full_policy="drop_oldest"
+        )
+        errors: list[Exception] = []
+
+        def submitter() -> None:
+            try:
+                for _ in range(PER_THREAD):
+                    sched.submit_task("compute", {})
+            except Exception as e:
+                errors.append(e)
+
+        ts = [threading.Thread(target=submitter) for _ in range(N_THREADS)]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join(timeout=30.0)
+
+        assert errors == [], f"submitter raced: {errors!r}"
+        total = N_THREADS * PER_THREAD
+        in_q = sched.get_queue_size()
+        dropped = sched.get_stats()["tasks_dropped"]
+        # Hard invariant: every submit either landed in queue or
+        # was counted as dropped. No silent loss.
+        assert in_q + dropped == total, (
+            f"counter desync under threaded drop_oldest: "
+            f"queue={in_q} dropped={dropped} sum={in_q + dropped} != {total}"
+        )
+        assert in_q == cap, f"queue should be at cap, got {in_q}"
+
+    def test_threaded_race_drop_newest_count_invariant(self):
+        """Mismo invariant pero bajo drop_newest. Si el lock no
+        cubre la decisión de aceptar/rechazar, los counters
+        desincronizan."""
+        cap = 50
+        N_THREADS = 8
+        PER_THREAD = 500
+        _, _, sched = build_loaded_scheduler(
+            radius=1, max_queue_size=cap, queue_full_policy="drop_newest"
+        )
+        errors: list[Exception] = []
+
+        def submitter() -> None:
+            try:
+                for _ in range(PER_THREAD):
+                    sched.submit_task("compute", {})
+            except Exception as e:
+                errors.append(e)
+
+        ts = [threading.Thread(target=submitter) for _ in range(N_THREADS)]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join(timeout=30.0)
+
+        assert errors == []
+        total = N_THREADS * PER_THREAD
+        in_q = sched.get_queue_size()
+        dropped = sched.get_stats()["tasks_dropped"]
+        assert in_q + dropped == total
+        assert in_q == cap
+
+    def test_capacity_zero_rejects_everything(self):
+        """capacity=0 con drop_newest: TODO submit es dropeado.
+        Edge case raro pero válido — un caller podría usarlo como
+        kill switch."""
+        N = 100
+        _, _, sched = build_loaded_scheduler(
+            radius=1, max_queue_size=0, queue_full_policy="drop_newest"
+        )
+        for _ in range(N):
+            sched.submit_task("compute", {})
+        assert sched.get_queue_size() == 0
+        assert sched.get_stats()["tasks_dropped"] == N
+
     def test_block_policy_drains_when_consumer_appears(self):
         """Una vez que un thread consumer empieza a tickear, el
         productor en block deja de timeout y completa."""
