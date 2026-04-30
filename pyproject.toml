@@ -136,6 +136,7 @@ markers = [
     "stress: opt-in stress tests under enjambre_de_guerra/ (slow; not run in default CI)",
     "slow: stress tests that take >30s individually",
     "posix_only: tests that require POSIX (skip on Windows)",
+    "nightly: time-bounded endurance tests (>10 min); run via the nightly CI workflow only",
 ]
 
 [tool.coverage.run]

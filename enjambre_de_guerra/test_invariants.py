@@ -36,19 +36,19 @@ hex_coords = st.builds(HexCoord, q=st.integers(-50, 50), r=st.integers(-50, 50))
 
 class TestGeometryInvariants:
     @given(a=hex_coords, b=hex_coords)
-    @settings(max_examples=500, deadline=None)
+    @settings(max_examples=2_000, deadline=None)
     def test_distance_symmetric(self, a: HexCoord, b: HexCoord):
         """d(a, b) == d(b, a) por triángulo de hex coords."""
         assert a.distance_to(b) == b.distance_to(a)
 
     @given(a=hex_coords, b=hex_coords, c=hex_coords)
-    @settings(max_examples=200, deadline=None)
+    @settings(max_examples=1_000, deadline=None)
     def test_distance_triangle_inequality(self, a: HexCoord, b: HexCoord, c: HexCoord):
         """d(a, c) <= d(a, b) + d(b, c)."""
         assert a.distance_to(c) <= a.distance_to(b) + b.distance_to(c)
 
     @given(center=hex_coords, n=st.integers(min_value=0, max_value=10))
-    @settings(max_examples=100, deadline=None)
+    @settings(max_examples=300, deadline=None)
     def test_ring_size_correct(self, center: HexCoord, n: int):
         """ring(0) == 1 punto; ring(n>0) == 6n puntos."""
         ring = list(center.ring(n))
@@ -56,7 +56,7 @@ class TestGeometryInvariants:
         assert len(ring) == expected
 
     @given(center=hex_coords, n=st.integers(min_value=1, max_value=8))
-    @settings(max_examples=100, deadline=None)
+    @settings(max_examples=300, deadline=None)
     def test_ring_distance_uniform(self, center: HexCoord, n: int):
         """Todos los puntos del ring(n) están a distancia n del center."""
         for coord in center.ring(n):
@@ -69,7 +69,7 @@ class TestPheromoneInvariants:
         elapsed=st.floats(min_value=0.1, max_value=5.0),
         decay_rate=st.floats(min_value=0.01, max_value=0.5),
     )
-    @settings(max_examples=200, deadline=None)
+    @settings(max_examples=1_000, deadline=None)
     def test_decay_monotonically_decreasing(
         self, intensity: float, elapsed: float, decay_rate: float
     ):
@@ -146,7 +146,7 @@ class TestHiveTaskRoundtripInvariants:
         task_type=st.sampled_from(["compute", "spawn", "warmup", "explore", "validate"]),
         attempts=st.integers(min_value=0, max_value=10),
     )
-    @settings(max_examples=200, deadline=None)
+    @settings(max_examples=1_000, deadline=None)
     def test_roundtrip_preserves_simple_fields(self, priority: int, task_type: str, attempts: int):
         """to_dict ∘ from_dict == identity sobre los campos primitivos."""
         task = HiveTask(priority=priority, task_type=task_type)
@@ -160,7 +160,7 @@ class TestHiveTaskRoundtripInvariants:
         q=st.integers(min_value=-20, max_value=20),
         r=st.integers(min_value=-20, max_value=20),
     )
-    @settings(max_examples=100, deadline=None)
+    @settings(max_examples=300, deadline=None)
     def test_roundtrip_preserves_target_cell(self, q: int, r: int):
         """target_cell sobrevive el roundtrip exact-match."""
         task = HiveTask(priority=2, task_type="compute", target_cell=HexCoord(q, r))

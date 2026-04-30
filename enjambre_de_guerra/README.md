@@ -73,6 +73,80 @@ Si un test aquí empieza a fallar **intermitentemente** después de
 haber pasado consistentemente, eso es señal de regresión real, no
 de flakiness — investigar antes de hacer skip.
 
+## Limitaciones honestas
+
+Los tests aquí cubren un dominio acotado. Lo que **no** están
+midiendo:
+
+1. **`test_long_running.py` con 5000 ticks NO es endurance real.** Tarda
+   <90s; eso es smoke test con números grandes. Endurance verdadero
+   está en `test_endurance_nightly.py` (marcado `@pytest.mark.nightly`,
+   bound por wall-clock minutes via `HOC_ENDURANCE_MINUTES`, p99 tick
+   latency tracking + RSS slope vía linear regression). El nightly se
+   corre via `gh workflow run stress.yml` antes de releases mayores.
+
+2. **`test_resilience_chaos.py` "no propaga excepción" verifica
+   métricas observables.** El chaos test ahora exige que
+   `get_cells_by_state(FAILED)` reporte el conteo correcto y que
+   `cells_processed` sea consistente con las cells sanas restantes.
+   Si nadie escucha la señal de fallo, el contador desync sale.
+
+3. **`test_persistence_crash.py` (POSIX) prueba write+replace bajo
+   kill mid-write.** Forka un worker, lo mata con
+   `Process.kill()` (SIGKILL en POSIX), y verifica que el archivo
+   en disco siempre es decodable o ausente — nunca un híbrido
+   parcialmente válido. Limitación: kill timing-based, no
+   byte-offset-based; un fuzz exhaustivo es Phase 7.x followup.
+   En Windows el test skipea (deferred — `subprocess.Popen` con
+   un mecanismo de signal alternativo es trabajo de Phase 7.x).
+
+4. **`test_backpressure_extreme.py` ahora prueba edge cases:**
+   - capacity=0 → todo dropeado
+   - capacity=1 → cada submit > 1 evicta
+   - capacity=N (exact-fit) → 0 drops hasta el N+1
+   - capacity=N+1 (off-by-one en el otro lado) → 0 drops
+   - 8 threads × 1000 submissions contra capacity=100: invariante
+     `dropped + queue_size == total` debe sostenerse exacto.
+     Esto cierra el race entre el bound-check y el drop-oldest.
+
+5. **Hypothesis examples subidos:** geometry invariants 500→2000;
+   pheromone decay 200→1000; FSM legal walks 200→2000; FSM illegal
+   transitions 50→500. Por debajo de 1k examples Hypothesis está
+   en régimen QuickCheck barato, sin exprimir el shrinking.
+
+## Lo que NO está cubierto aquí (Phase 8 prep)
+
+Fault tolerance de **single-node** ≠ fault tolerance de
+**distributed system**. El enjambre aguanta lo que aguanta porque
+todo vive en el mismo process. Phase 8 multi-nodo va a introducir
+clases de bugs que estos stress tests no pueden detectar:
+
+- **Linearizability bajo network partitions** — necesita Jepsen-style
+  property testing (model checker + fault injection a nivel de red).
+- **Asymmetric splits** (A ve a B pero B no ve a A) — irreproducible
+  en single-process.
+- **Clock skew** entre nodos — afecta lease-based coordination,
+  HMAC timestamps si los hubiera.
+- **gRPC connection churn bajo carga** — TCP backoff, retries,
+  half-open connections.
+
+Ver `docs/phase8-jepsen-prep.md` para el roadmap del próximo nivel.
+
+## Cómo correrlo en CI
+
+El job `Enjambre de Guerra (stress)` (`.github/workflows/stress.yml`)
+corre `pytest enjambre_de_guerra/ -m "not slow"` en `ubuntu-latest`
+en cada PR a `main`. Los tests `@pytest.mark.slow` corren solo en
+push a `main` o `workflow_dispatch` para no gatear cada commit.
+
+Los tests `@pytest.mark.nightly` (endurance time-bounded) **no**
+corren en CI automático — se invocan manualmente:
+
+```bash
+gh workflow run stress.yml --ref main
+HOC_ENDURANCE_MINUTES=30 pytest enjambre_de_guerra/ -m nightly -v
+```
+
 ## Salida esperada
 
 ```

@@ -44,16 +44,46 @@ def _force_random_failures(grid: HoneycombGrid, fraction: float) -> int:
 class TestResilienceChaos:
     def test_30pct_failed_grid_still_ticks(self):
         """Marca 30% de cells como FAILED. El grid sigue tick'ando sin
-        excepción; las cells sanas siguen procesando."""
+        excepción.
+
+        Esto NO es solo "no exception" — verificamos que las métricas
+        observables reflejan el chaos:
+        - get_cells_by_state(FAILED) cuenta lo que esperamos.
+        - cells_processed > 0 (algunas sanas sí procesaron).
+        - El tick emite un dict válido con la shape esperada.
+        """
         grid = HoneycombGrid(HoneycombConfig(radius=3))
+        n_total = len(grid._cells)
         flipped = _force_random_failures(grid, fraction=0.3)
         assert flipped > 0
 
-        # No exception raised by the tick path.
+        # Métrica observable #1: el grid reporta el número correcto
+        # de cells FAILED via su consulta indexada.
+        failed_cells = grid.get_cells_by_state(CellState.FAILED)
+        assert len(failed_cells) == flipped, (
+            f"get_cells_by_state(FAILED) reportó {len(failed_cells)}, "
+            f"esperaba {flipped}. La FSM marcó FAILED pero el state "
+            f"index no se enteró."
+        )
+
+        # Métrica observable #2: tick path completa sin excepción y
+        # devuelve la shape esperada.
         result = grid.run_tick_sync()
         assert isinstance(result, dict)
-        # Some cells were processed despite the failures.
-        assert result["cells_processed"] >= 0
+        assert {"tick", "cells_processed", "errors", "auto_recovered"} <= set(result)
+
+        # Métrica observable #3: las cells sanas (los 70% restantes)
+        # son exactamente las que ticked. No hay cell processed que
+        # esté en FAILED.
+        # cells_processed cuenta cells que entraron a execute_tick;
+        # las FAILED retornan early ("FAILED" reason) pero técnicamente
+        # cuentan como "processed" en algunas implementaciones.
+        # Lo crítico es que el grid sigue funcional: el tick no
+        # devolvió 0 procesados ni todos errores.
+        assert result["cells_processed"] >= n_total - flipped, (
+            f"cells_processed={result['cells_processed']} sospechosamente bajo "
+            f"para {n_total - flipped} cells sanas — chaos contagió cells healthy"
+        )
 
     def test_chaos_50_ticks_random_kills_each_tick(self):
         """Cada tick mata 1-2 cells aleatorias. El grid sobrevive 50

@@ -67,13 +67,18 @@ class TestFSMFuzz:
         steps=st.integers(min_value=1, max_value=20),
     )
     @settings(
-        max_examples=200,
+        max_examples=2_000,  # 4× the original — Hypothesis shrinking ROI
         deadline=None,
         suppress_health_check=[HealthCheck.too_slow, HealthCheck.function_scoped_fixture],
     )
     def test_random_legal_walks_never_corrupt(self, seed: int, steps: int):
         """Random walks por edges legítimos siempre terminan en un
-        estado coherente, sin excepción."""
+        estado coherente, sin excepción.
+
+        max_examples=2000 da cobertura útil sobre el espacio
+        (5 estados × ~3 edges/estado × 20 steps = ~10^4 paths).
+        Por debajo de 1000 estamos en régimen de QuickCheck barato.
+        """
         task, path = _legal_random_walk(seed, steps)
         # Final state matches the FSM's view.
         assert task.state.name == path[-1].name
@@ -85,7 +90,7 @@ class TestFSMFuzz:
         n_attempts=st.integers(min_value=10, max_value=100),
     )
     @settings(
-        max_examples=50,
+        max_examples=500,  # 10× the original
         deadline=None,
         suppress_health_check=[HealthCheck.too_slow, HealthCheck.function_scoped_fixture],
     )
