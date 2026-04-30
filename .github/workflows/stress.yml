@@ -1,0 +1,108 @@
+name: Enjambre de Guerra (stress)
+
+# Phase 7 followup: corre la suite ``enjambre_de_guerra/`` que el
+# default ``pytest`` discovery skipea (``norecursedirs`` en
+# pyproject.toml). Sin este job, los 4 tests POSIX-only del sandbox
+# burst (SIGSEGV / OOM / timeout containment) son vaporware
+# verificacional — el local Windows runner los skipea, y el CI
+# default no los corre.
+#
+# Decisión de scope:
+# - ubuntu-latest, Python 3.12 — match del primary deployment target.
+# - El job no es required por defecto en branch protection (todavía);
+#   es informational hasta que tengamos varias semanas de estabilidad.
+# - ``-m "not slow"`` evita los tests > 30s (5K-tick endurance,
+#   100K drop_oldest). Esos quedan para el job nightly separado
+#   cuando exista (`enjambre-nightly.yml` placeholder).
+
+on:
+  push:
+    branches: [main, "phase/**"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  stress-fast:
+    name: enjambre fast (-m "not slow")
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: hoc
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: hoc
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            requirements*.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+          python -m pip install mscs
+
+      - name: Verify imports
+        run: python -c "from hoc import HoneycombGrid; print('OK')"
+
+      - name: Run enjambre_de_guerra (-m 'not slow')
+        # The folder is excluded from default pytest collection via
+        # ``norecursedirs``. We invoke it explicitly. -m "not slow"
+        # caps individual tests at <30s; @pytest.mark.slow tests are
+        # only run by the nightly workflow.
+        run: |
+          python -m pytest enjambre_de_guerra/ \
+            -v -m "not slow" \
+            --timeout=120 \
+            --tb=short
+
+  stress-slow:
+    # Runs only on workflow_dispatch (manual) and on main pushes —
+    # not on every PR so the slow tests don't gate every commit.
+    name: enjambre slow (@pytest.mark.slow)
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: hoc
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: hoc
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            requirements*.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+          python -m pip install mscs
+
+      - name: Run enjambre_de_guerra (-m slow)
+        run: |
+          python -m pytest enjambre_de_guerra/ \
+            -v -m "slow" \
+            --timeout=600 \
+            --tb=short
