@@ -1165,12 +1165,20 @@ class RoyalJelly:
         """
         Obtiene comandos pendientes para una celda.
 
+        Cada comando se verifica HMAC antes de ser entregado: si la firma
+        no valida, el comando se omite y se loguea — la celda destinataria
+        nunca lo ve. ``acknowledged`` es intencionalmente mutable y queda
+        fuera del HMAC (ver :meth:`RoyalMessage._canonical_payload`), así
+        que las celdas pueden ack-ear el objeto retornado y eso seguirá
+        actualizando el comando en ``_pending_commands`` (aliasing
+        deliberado para que :meth:`acknowledge` funcione).
+
         Args:
             cell_coord: Coordenada de la celda
             limit: Máximo de comandos a retornar
 
         Returns:
-            Lista de comandos aplicables
+            Lista de comandos aplicables y con firma válida.
         """
         with self._lock:
             applicable: list[RoyalMessage] = []
@@ -1182,10 +1190,21 @@ class RoyalJelly:
                 # 1. Es broadcast (target=None)
                 # 2. Es para esta celda específica
                 # 3. No ha sido ya reconocido por esta celda
-                if (
-                    cmd.target is None or cmd.target == cell_coord
-                ) and cell_coord not in cmd.acknowledged:
-                    applicable.append(cmd)
+                if not (
+                    (cmd.target is None or cmd.target == cell_coord)
+                    and cell_coord not in cmd.acknowledged
+                ):
+                    continue
+
+                if not cmd.verify():
+                    logger.warning(
+                        "RoyalMessage %s rejected on delivery to %s: invalid/missing HMAC",
+                        cmd.command,
+                        cell_coord,
+                    )
+                    continue
+
+                applicable.append(cmd)
 
             return applicable
 

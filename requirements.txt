@@ -2,6 +2,9 @@
 # Dependencias de producción
 
 numpy>=1.21.0
+# mscs (2026-04-30): runtime dep for HMAC-authenticated serialization in
+# security/memory/resilience/nectar/storage. Pinned for reproducibility.
+mscs>=2.4.0
 # Phase 4 (2026-04-24): tramoya powers the state-machine subpackage
 # (CellState/TaskLifecycle/QueenSuccession/PheromoneDeposit/FailoverFlow).
 # Pinned for reproducibility — see ADR-007 for the integration rationale.

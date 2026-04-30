@@ -6,18 +6,22 @@ in-scope.
 
 ## Supported versions
 
-HOC is currently in stabilization (Phase 3 of the 10-phase roadmap). Only
+HOC is currently in stabilization (Phase 7 of the 10-phase roadmap). Only
 the latest tagged release receives security fixes:
 
 | Version             | Status           | Security fixes |
 |---------------------|------------------|----------------|
-| `v1.3.0-phase03`    | active (Phase 3) | yes            |
-| `v1.2.0-phase02`    | previous         | critical only  |
+| `v2.0.0-phase07`    | active (Phase 7) | yes            |
+| `v1.6.0-phase06`    | previous         | critical only  |
+| `v1.5.0-phase05`    | older            | no             |
+| `v1.4.x-phase04.x`  | older            | no             |
+| `v1.3.0-phase03`    | older            | no             |
+| `v1.2.0-phase02`    | older            | no             |
 | `v1.1.0-phase01`    | older            | no             |
 | `v1.0.0-baseline`   | historical       | no             |
 
-Once HOC reaches `v2.0.0` (roadmap Phase 10), a longer-term support policy
-will be documented here.
+Once HOC reaches `v3.0.0` (roadmap Phase 10, the major release), a
+longer-term support policy will be documented here.
 
 ## Reporting a vulnerability
 

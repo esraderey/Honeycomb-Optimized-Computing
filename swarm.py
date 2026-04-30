@@ -495,6 +495,16 @@ class ForagerBehavior(BeeBehavior):
 
             # Simular ejecución (en implementación real, ejecutar vCore)
             # Aquí integraríamos con CAMV
+            #
+            # SEGURIDAD: ``payload["execute"]`` se invoca como callable
+            # arbitrario. Phase 7.4 introdujo ``SandboxedTaskRunner``
+            # (``sandbox.py`` + ADR-017) con aislamiento por proceso y
+            # timeouts duros, pero por diseño no está cableado aquí: el
+            # runner es opt-in y el cableado vía ``SwarmConfig.sandbox``
+            # queda pendiente (ver docstring de ``sandbox.py``). Mientras
+            # tanto, cualquier llamador que acepte payloads externos DEBE
+            # validarlos antes de encolar la tarea — única defensa en
+            # single-process unsandboxed.
             if task.payload.get("execute"):
                 result = task.payload["execute"]()
             else:

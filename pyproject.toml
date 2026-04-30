@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hoc"
-version = "1.3.0"
+version = "2.0.0"
 description = "HOC - Honeycomb Optimized Computing: Computación Bio-Inspirada con Topología Hexagonal"
 readme = "README.md"
 license = {text = "MIT"}
@@ -25,6 +25,12 @@ classifiers = [
 ]
 dependencies = [
     "numpy>=1.21.0",
+    # mscs powers safe (HMAC-authenticated) serialization across security.py,
+    # memory.py, resilience.py, nectar.py and storage/checkpoint.py. It must
+    # be a runtime dep — those modules import it at module load. Was missing
+    # from this list until 2026-04-30 (only present as a mypy override),
+    # which broke clean installs.
+    "mscs>=2.4.0",
     # Phase 4: state-machine engine for the hoc.state_machines subpackage.
     # See ADR-007 for the integration rationale; runtime dep because
     # FSMs are constructed in production paths (HoneycombCell.state.setter,
