@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
+import uuid
 from collections import defaultdict
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
@@ -625,29 +627,37 @@ class HoneycombGrid:
     # ESTADÍSTICAS Y MÉTRICAS
     # ─────────────────────────────────────────────────────────────────────────
 
+    def _compute_stats_locked(self) -> dict[str, Any]:
+        """Compute stats without acquiring ``_rw_lock``. Caller must already
+        hold a read lock. Extracted so ``to_dict`` (already read-locked) can
+        reuse the body without re-acquiring — ``RWLock`` is not reentrant
+        and a writer waiting between the two ``read_lock`` calls would
+        deadlock the second acquire."""
+        workers = [c for c in self._cells.values() if isinstance(c, WorkerCell)]
+        worker_loads = [w.load for w in workers]
+
+        return {
+            "total_cells": len(self._cells),
+            "worker_cells": len(workers),
+            "drone_cells": len(self._role_index.get(CellRole.DRONE, set())),
+            "nursery_cells": len(self._role_index.get(CellRole.NURSERY, set())),
+            "guard_cells": len(self._role_index.get(CellRole.GUARD, set())),
+            "scout_cells": len(self._role_index.get(CellRole.SCOUT, set())),
+            "total_vcores": sum(c.vcore_count for c in self._cells.values()),
+            "average_load": float(np.mean(worker_loads)) if worker_loads else 0,
+            "load_stddev": float(np.std(worker_loads)) if worker_loads else 0,
+            "max_load": float(max(worker_loads)) if worker_loads else 0,
+            "min_load": float(min(worker_loads)) if worker_loads else 0,
+            "total_pheromones": sum(c.pheromone_level for c in self._cells.values()),
+            "failed_cells": sum(1 for c in self._cells.values() if c.state == CellState.FAILED),
+            "tick_count": self._tick_count,
+            "queen_coord": self._queen.coord.to_dict() if self._queen else None,
+            "topology": self._topology.name,
+        }
+
     def get_stats(self) -> dict[str, Any]:
         with self._rw_lock.read_lock():
-            workers = [c for c in self._cells.values() if isinstance(c, WorkerCell)]
-            worker_loads = [w.load for w in workers]
-
-            return {
-                "total_cells": len(self._cells),
-                "worker_cells": len(workers),
-                "drone_cells": len(self._role_index.get(CellRole.DRONE, set())),
-                "nursery_cells": len(self._role_index.get(CellRole.NURSERY, set())),
-                "guard_cells": len(self._role_index.get(CellRole.GUARD, set())),
-                "scout_cells": len(self._role_index.get(CellRole.SCOUT, set())),
-                "total_vcores": sum(c.vcore_count for c in self._cells.values()),
-                "average_load": float(np.mean(worker_loads)) if worker_loads else 0,
-                "load_stddev": float(np.std(worker_loads)) if worker_loads else 0,
-                "max_load": float(max(worker_loads)) if worker_loads else 0,
-                "min_load": float(min(worker_loads)) if worker_loads else 0,
-                "total_pheromones": sum(c.pheromone_level for c in self._cells.values()),
-                "failed_cells": sum(1 for c in self._cells.values() if c.state == CellState.FAILED),
-                "tick_count": self._tick_count,
-                "queen_coord": self._queen.coord.to_dict() if self._queen else None,
-                "topology": self._topology.name,
-            }
+            return self._compute_stats_locked()
 
     def get_metrics_history(self, limit: int = 100) -> list[dict[str, Any]]:
         return [m.to_dict() for m in self._metrics_collector.get_history(limit)]
@@ -735,7 +745,7 @@ class HoneycombGrid:
                 "topology": self._topology.name,
                 "tick_count": self._tick_count,
                 "cells": {f"{c.q},{c.r}": cell.to_dict() for c, cell in self._cells.items()},
-                "stats": self.get_stats(),
+                "stats": self._compute_stats_locked(),
             }
 
     def to_json(self, indent: int = 2) -> str:
@@ -813,7 +823,11 @@ class HoneycombGrid:
         # never leaves a torn file at ``target``. ``replace`` is the
         # cross-platform sibling of POSIX ``rename`` — atomic on
         # both Windows (since Python 3.3) and POSIX.
-        tmp = target.with_suffix(target.suffix + ".tmp")
+        # Suffix includes a per-call unique token (PID + uuid4) so two
+        # concurrent checkpoints to the same ``target`` don't clobber
+        # each other's staging file before the rename.
+        tmp_token = f".{os.getpid()}.{uuid.uuid4().hex}.tmp"
+        tmp = target.with_suffix(target.suffix + tmp_token)
         tmp.write_bytes(blob)
         tmp.replace(target)
 

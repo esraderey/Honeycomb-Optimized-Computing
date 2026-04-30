@@ -16,8 +16,8 @@ the latest tagged release receives security fixes:
 | `v1.1.0-phase01`    | older            | no             |
 | `v1.0.0-baseline`   | historical       | no             |
 
-Once HOC reaches `v2.0.0` (roadmap Phase 10), a longer-term support policy
-will be documented here.
+Once HOC reaches `v3.0.0` (roadmap Phase 10, the major release), a
+longer-term support policy will be documented here.
 
 ## Reporting a vulnerability
 
