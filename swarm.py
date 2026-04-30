@@ -383,12 +383,14 @@ class ForagerBehavior(BeeBehavior):
             # Aquí integraríamos con CAMV
             #
             # SEGURIDAD: ``payload["execute"]`` se invoca como callable
-            # arbitrario. Esto solo es seguro mientras el origen de la
-            # tarea sea local y confiable (proceso único, sin tareas
-            # cruzando frontera de red/plugin/usuario). Phase 7 introducirá
-            # sandboxing real (ROADMAP.md:550); hasta entonces, cualquier
-            # llamador que acepte payloads externos DEBE validarlos antes
-            # de encolar la tarea (ver issue de RCE).
+            # arbitrario. Phase 7.4 ya introdujo ``SandboxedTaskRunner``
+            # (``sandbox.py`` + ADR-017, en ``phase/07-async-perf``) con
+            # aislamiento por proceso y timeouts duros, pero por diseño
+            # no está cableado aquí: el runner es opt-in y el cableado
+            # vía ``SwarmConfig.sandbox`` queda pendiente (ver docstring
+            # de ``sandbox.py``). Mientras tanto, cualquier llamador que
+            # acepte payloads externos DEBE validarlos antes de encolar
+            # la tarea — única defensa en single-process unsandboxed.
             if task.payload.get("execute"):
                 result = task.payload["execute"]()
             else:
