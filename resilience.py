@@ -964,6 +964,15 @@ class QueenSuccession:
 
         Retorna el candidato ganador si supera mayoría estricta (>50%)
         de los votos válidos. Retorna ``None`` en otro caso.
+
+        TODO (Phase 8 — distributed): el quórum se calcula sobre votos
+        válidos recibidos, no sobre un set de votantes elegibles. Mientras
+        el sistema sea single-process esto es seguro (toda celda viva
+        emite un voto a través del mismo NectarFlow), pero al cruzar la
+        frontera de red un atacante con la HMAC filtrada podría fabricar
+        N votantes y satisfacer el quórum. Cuando se introduzca el
+        transporte distribuido (ROADMAP Phase 8) este método debe recibir
+        y filtrar contra ``eligible_voters: set[HexCoord]``.
         """
         tallies: dict[HexCoord, int] = defaultdict(int)
         voters_counted: set[HexCoord] = set()

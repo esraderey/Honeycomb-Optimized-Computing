@@ -81,12 +81,12 @@
 ║                                                                              ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 
-Versión: 1.0.0
+Versión: 2.0.0
 Autor: Vent Framework
 Licencia: MIT
 """
 
-__version__ = "1.0.0"
+__version__ = "2.0.0"
 __author__ = "Vent Framework"
 __license__ = "MIT"
 
